@@ -1,212 +1,116 @@
-# EarthX
+# EarthVerse AI
 
-```python
-readme_content_en = """# 🌍 EarthVerse AI
+EarthVerse AI is an interactive web project that combines Earth observation data, 3D visualization, and artificial intelligence in a single platform
 
-**EarthVerse AI** is a modern web application powered by artificial intelligence to deliver innovative and intelligent solutions. Built on top of **React** and **Vite**, this project offers a lightning-fast, modular, and highly performant user experience.
+The main idea is to make complex Earth-related information easier to explore and understand through an interactive interface instead of presenting the data only as static charts or text.
 
----
+## What is EarthVerse AI?
 
-## 🚀 Features
+EarthVerse AI is designed as an exploration and visualization platform for Earth data.
 
-- **Fast & Lightweight:** Powered by Vite for instant server start and lightning-fast Hot Module Replacement (HMR).
-- **Component-Driven Architecture:** Scalable and maintainable codebase built using React functional components.
-- **Modern User Experience (UX):** Clean, responsive, and intuitive interface designed following contemporary UI/UX best practices.
-- **AI Integration:** Dynamic data processing leveraging artificial intelligence models and analytics.
+The project focuses on three main areas:
 
----
+* Earth and environmental data
+* Interactive geospatial visualization
+* AI-assisted analysis and interpretation
 
-## 🛠️ Tech Stack & Tools
+The application is being developed with a modular structure so that additional datasets, visualizations, and AI-based features can be added without rebuilding the entire application.
 
-- **Frontend:** React.js, JSX, HTML5, CSS3 / Tailwind CSS
-- **Bundler / Build Tool:** Vite
-- **Package Manager:** npm / yarn / pnpm
+## Features
 
----
+### Interactive Earth Visualization
 
-## 📁 Project Structure
+An interactive environment for exploring Earth-related information and geographical data.
 
-```text
-EarthVerse-AI/
-├── public/              # Static assets (favicons, public images, etc.)
-├── src/
-│   ├── assets/          # Media files (images, icons, vectors)
-│   ├── components/      # Reusable UI components
-│   ├── pages/           # Page views and routing components
-│   ├── App.jsx          # Root application component
-│   ├── index.css        # Global styles and Tailwind imports
-│   └── main.jsx         # Application entry point (DOM Rendering)
-├── index.html           # HTML template
-├── package.json         # Dependencies and scripts
-├── vite.config.js       # Vite configuration file
-└── README.md            # Project documentation
+### Data Visualization
 
-```
+Earth observation and environmental datasets can be presented through visual and interactive elements instead of relying only on raw numbers.
 
----
+### AI Integration
 
-## ⚙️ Getting Started
+AI-based components are used to process and interpret selected data and provide additional context to the user.
 
-Follow these instructions to get a copy of the project up and running on your local machine.
+### Modular Architecture
 
-### 1. Prerequisites
+The application is organized into reusable components and separate modules. This makes it easier to add new data sources and features as the project develops.
 
-Ensure you have **Node.js** (v16.x or higher) and a package manager (**npm** or **yarn**) installed on your machine.
+### Vite Development Environment
 
-### 2. Clone the Repository
+The project uses Vite for local development and production builds, providing a fast development workflow with Hot Module Replacement.
 
-```bash
-git clone [https://github.com/your-username/earthverse-ai.git](https://github.com/your-username/earthverse-ai.git)
-cd earthverse-ai
+## Technology
 
-```
+| Technology       | Purpose                                   |
+| ---------------- | ----------------------------------------- |
+| React            | User interface and component architecture |
+| Vite             | Development server and build system       |
+| JavaScript / JSX | Application logic                         |
+| CSS              | Interface styling                         |
+| CesiumJS         | 3D Earth and geospatial visualization     |
+| AI APIs / Models | Data analysis and interpretation          |
 
-### 3. Install Dependencies
-
-```bash
-npm install
-# or
-yarn install
-
-```
-
-### 4. Run the Development Server
-
-```bash
-npm run dev
-# or
-yarn dev
-
-```
-
-Open `http://localhost:5173` in your browser to view the application.
-
----
-
-## 📦 Production Build
-
-To create an optimized production build, run:
-
-```bash
-npm run build
-
-```
-
-The output files will be generated in the `dist/` directory, ready to be deployed to platforms like Vercel, Netlify, or GitHub Pages.
-
----
-
-## 📄 License
-
-This project is licensed under the [MIT License](https://www.google.com/search?q=LICENSE).
-"""
-
-with open("README-v2.md", "w", encoding="utf-8") as f:
-f.write(readme_content_en)
-
-print("README-v2.md file generated successfully.")
-
-```
-
-```text?code_stdout&code_event_index=1
-README-v2.md file generated successfully.
-
-
-```
-
-Your Markdown file is ready
-[file-tag: code-generated-file-2679f9e6-65c0-45ff-87ae-3e2c6e0d087b]
-
-Here is the English version of the `README.md` file:
-
-```markdown
-# 🌍 EarthVerse AI
-
-**EarthVerse AI** is a modern web application powered by artificial intelligence to deliver innovative and intelligent solutions. Built on top of **React** and **Vite**, this project offers a lightning-fast, modular, and highly performant user experience.
-
----
-
-## 🚀 Features
-
-- **Fast & Lightweight:** Powered by Vite for instant server start and lightning-fast Hot Module Replacement (HMR).
-- **Component-Driven Architecture:** Scalable and maintainable codebase built using React functional components.
-- **Modern User Experience (UX):** Clean, responsive, and intuitive interface designed following contemporary UI/UX best practices.
-- **AI Integration:** Dynamic data processing leveraging artificial intelligence models and analytics.
-
----
-
-## 🛠️ Tech Stack & Tools
-
-- **Frontend:** React.js, JSX, HTML5, CSS3 / Tailwind CSS
-- **Bundler / Build Tool:** Vite
-- **Package Manager:** npm / yarn / pnpm
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```text
 EarthVerse-AI/
-├── public/              # Static assets (favicons, public images, etc.)
+├── public/
+│   └── Static files and public assets
+│
 ├── src/
-│   ├── assets/          # Media files (images, icons, vectors)
-│   ├── components/      # Reusable UI components
-│   ├── pages/           # Page views and routing components
-│   ├── App.jsx          # Root application component
-│   ├── index.css        # Global styles and Tailwind imports
-│   └── main.jsx         # Application entry point (DOM Rendering)
-├── index.html           # HTML template
-├── package.json         # Dependencies and scripts
-├── vite.config.js       # Vite configuration file
-└── README.md            # Project documentation
-
+│   ├── assets/
+│   │   └── Images, icons and other media
+│   │
+│   ├── components/
+│   │   └── Reusable interface components
+│   │
+│   ├── pages/
+│   │   └── Application pages and views
+│   │
+│   ├── App.jsx
+│   │   └── Main application component
+│   │
+│   ├── index.css
+│   │   └── Global styles
+│   │
+│   └── main.jsx
+│       └── Application entry point
+│
+├── index.html
+├── package.json
+├── vite.config.js
+└── README.md
 ```
 
----
+## Running Locally
 
-## ⚙️ Getting Started
-
-Follow these instructions to get a copy of the project up and running on your local machine.
-
-### 1. Prerequisites
-
-Ensure you have **Node.js** (v16.x or higher) and a package manager (**npm** or **yarn**) installed on your machine.
-
-### 2. Clone the Repository
+Clone the repository and install the dependencies:
 
 ```bash
-git clone [https://github.com/your-username/earthverse-ai.git](https://github.com/your-username/earthverse-ai.git)
-cd earthverse-ai
-
-```
-
-### 3. Install Dependencies
-
-```bash
+git clone <repository-url>
+cd EarthVerse-AI
 npm install
-# or
-yarn install
-
 ```
 
-### 4. Run the Development Server
+Start the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-
 ```
 
-Open `http://localhost:5173` in your browser to view the application.
+The application will then be available at the local address shown by Vite.
+
+## Development
+
+EarthVerse AI is an ongoing project. The current implementation focuses on establishing the core application structure and visualization layer, while additional Earth-data and AI capabilities can be integrated as development continues.
+
+## Goal
+
+The long-term goal of EarthVerse AI is to create a single interface where users can explore Earth data, visualize changes on our planet, and use AI to better understand the information behind the data.
 
 ---
 
-## 📦 Production Build
+**EarthVerse AI**
+*Exploring Earth through data, visualization and AI.*
 
-To create an optimized production build, run:
 
-```bash
-npm run build
-
-```
+Thank You :)
