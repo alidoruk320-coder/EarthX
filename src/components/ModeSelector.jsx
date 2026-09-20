@@ -18,7 +18,7 @@ export default function ModeSelector({
 
             >
 
-                🌦 Live
+                Live
 
             </button>
 
@@ -30,7 +30,7 @@ export default function ModeSelector({
 
             >
 
-                🌍 Climate
+                Climate
 
             </button>
 
@@ -42,7 +42,7 @@ export default function ModeSelector({
 
             >
 
-                🤖 AI Report
+                AI Report
 
             </button>
 

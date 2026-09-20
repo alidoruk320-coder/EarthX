@@ -24,31 +24,31 @@ export default function LayerSelector({
 
                 <option value="earth">
 
-                    🌍 Earth
+                    Earth
 
                 </option>
 
                 <option value="truecolor">
 
-                    🛰 True Color
+                    True Color
 
                 </option>
 
                 <option value="temperature">
 
-                    🌡 Surface Temperature
+                    Surface Temperature
 
                 </option>
 
                 <option value="ndvi">
 
-                    🌱 Vegetation (NDVI)
+                    Vegetation (NDVI)
 
                 </option>
 
                 <option value="fires">
 
-                    🔥 Wildfires
+                    Wildfires
 
                 </option>
 

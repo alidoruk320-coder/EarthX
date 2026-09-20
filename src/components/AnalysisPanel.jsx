@@ -6,7 +6,7 @@ export default function AnalysisPanel({ data }) {
 
             <div className="analysisPanel">
 
-                <h2>🌍 Earth Analysis</h2>
+                <h2>Earth Analysis</h2>
 
                 <p>
 
@@ -34,7 +34,7 @@ export default function AnalysisPanel({ data }) {
 
                 <div className="infoCard">
 
-                    <span>📍 Latitude</span>
+                    <span>Latitude</span>
 
                     <strong>{Number(data.lat).toFixed(4)}°</strong>
 
@@ -42,7 +42,7 @@ export default function AnalysisPanel({ data }) {
 
                 <div className="infoCard">
 
-                    <span>📍 Longitude</span>
+                    <span>Longitude</span>
 
                     <strong>{Number(data.lon).toFixed(4)}°</strong>
 
@@ -50,7 +50,7 @@ export default function AnalysisPanel({ data }) {
 
                 <div className="infoCard">
 
-                    <span>🌡 Temperature</span>
+                    <span>Temperature</span>
 
                     <strong>{data.temperature ?? "--"} °C</strong>
 
@@ -58,7 +58,7 @@ export default function AnalysisPanel({ data }) {
 
                 <div className="infoCard">
 
-                    <span>💧 Humidity</span>
+                    <span>Humidity</span>
 
                     <strong>{data.humidity ?? "--"}%</strong>
 
@@ -66,7 +66,7 @@ export default function AnalysisPanel({ data }) {
 
                 <div className="infoCard">
 
-                    <span>💨 Wind</span>
+                    <span>Wind</span>
 
                     <strong>{data.wind ?? "--"} km/h</strong>
 
@@ -74,7 +74,7 @@ export default function AnalysisPanel({ data }) {
 
                 <div className="infoCard">
 
-                    <span>🌧 Rain</span>
+                    <span>Rain</span>
 
                     <strong>{data.rain ?? "--"} mm</strong>
 
@@ -82,22 +82,37 @@ export default function AnalysisPanel({ data }) {
 
                 <div className="infoCard">
 
-                    <span>📅 Year</span>
+                    <span>Year</span>
 
                     <strong>{data.year}</strong>
 
                 </div>
 
             </div>
+<div className="healthCard">
+    <h3>Earth Health Score</h3>
 
+    <div className="healthBar">
+        <div
+            className="healthFill"
+            style={{
+                width: `${Math.max(15, 100 - (data.year - 1980) * 0.7)}%`
+            }}
+        />
+    </div>
+
+    <span>
+        {Math.round(Math.max(15, 100 - (data.year - 1980) * 0.7))}%
+    </span>
+</div>
             <div className="aiCard">
 
                 <h3>
                     {data.mode === "live"
-                        ? "🌦 Live Weather"
+                        ? "Live Weather"
                         : data.mode === "climate"
-                        ? "🌍 Climate Analysis"
-                        : "🤖 AI Report"}
+                        ? "Climate Analysis"
+                        : "AI Report"}
                 </h3>
 
                 <p>{data.summary}</p>

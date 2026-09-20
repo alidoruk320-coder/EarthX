@@ -10,7 +10,7 @@ import {
 
 
 import { useRef, useState, useEffect } from "react";
-
+import { getAIReport } from "../api/ai";
 import EarthViewer from "../cesium/Viewer";
 import SearchBar from "../components/SearchBar";
 import AnalysisPanel from "../components/AnalysisPanel";
@@ -143,30 +143,59 @@ export default function Earth() {
 
             else {
 
-                setAnalysis({
+    const prompt = `
+You are an environmental scientist.
 
-                    mode: "ai",
+Location: ${place.display_name}
 
-                    name: place.display_name,
+Latitude: ${place.lat}
 
-                    lat: Number(place.lat),
+Longitude: ${place.lon}
 
-                    lon: Number(place.lon),
+Year: ${year}
 
-                    temperature: "--",
+Write a professional environmental report.
 
-                    humidity: "--",
+Include:
 
-                    wind: "--",
+Overall Earth Health
 
-                    year: year,
+Climate risks
 
-                    summary:
-                        "Generating AI environmental report..."
+Possible future impacts
 
-                });
+Recommendations
 
-            }
+Maximum 150 words.
+`;
+
+    const report = await getAIReport(prompt);
+
+    setAnalysis({
+
+        mode:"ai",
+
+        name:place.display_name,
+
+        lat:Number(place.lat),
+
+        lon:Number(place.lon),
+
+        temperature:"AI",
+
+        humidity:"AI",
+
+        wind:"AI",
+
+        rain:"AI",
+
+        year,
+
+        summary:report
+
+    });
+
+}
 
         }
 
