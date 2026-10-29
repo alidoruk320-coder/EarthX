@@ -1,3 +1,11 @@
 .env
+backend/.env
+backend/gee-service-account.json
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+backend/.venv*/
+__pycache__/
+*.py[cod]
 node_modules/
 dist/

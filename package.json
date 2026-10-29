@@ -1,26 +1,19 @@
 {
-  "homepage": "https://alidoruk320-coder.github.io/EarthX",
   "name": "earthverse-ai",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "workspaces": [
+    "frontend"
+  ],
   "scripts": {
-  "dev": "vite",
-  "build": "vite build",
-  "preview": "vite preview",
-  "predeploy": "npm run build",
-  "deploy": "gh-pages -d dist"
-},
-  "dependencies": {
-    "@turf/turf": "^7.3.5",
-    "cesium": "^1.133.1",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^5.0.2",
-    "gh-pages": "^6.3.0",
-    "vite": "^8.1.4",
-    "vite-plugin-cesium": "^1.2.23"
+    "dev": "npm run dev --workspace frontend --",
+    "frontend:dev": "npm run dev --workspace frontend --",
+    "build": "npm run build --workspace frontend",
+    "frontend:build": "npm run build --workspace frontend",
+    "preview": "npm run preview --workspace frontend",
+    "deploy": "npx vercel --prod",
+    "backend:install": "python3.12 -m venv backend/.venv312 && backend/.venv312/bin/python -m pip install -r backend/requirements.txt",
+    "backend:dev": "cd backend && .venv312/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
   }
 }
