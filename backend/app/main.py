@@ -2,10 +2,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import FRONTEND_ORIGINS
+from app.responses import SafeJSONResponse
 from app.services.gee_client import init_gee, is_gee_initialized
 from app.routers import biodiversity, imagery, point_analysis, cascade, impact
 
-app = FastAPI(title="TwinEarth API")
+app = FastAPI(title="TwinEarth API", default_response_class=SafeJSONResponse)
 
 app.add_middleware(
     CORSMiddleware,

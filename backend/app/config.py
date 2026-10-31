@@ -39,6 +39,7 @@ VARIABLES = {
     "temperature": {
         "collection": "MODIS/061/MOD11A2",
         "band": "LST_Day_1km",
+        "equal_area": True,
         "scale_factor": 0.02,
         "offset": -273.15,   # Kelvin -> Celsius
         "palette": ["040274", "0502a3", "241fa8", "1e5cc4", "1b8dd1",
@@ -52,6 +53,7 @@ VARIABLES = {
     "ndvi": {
         "collection": "MODIS/061/MOD13Q1",
         "band": "NDVI",
+        "equal_area": True,
         "scale_factor": 0.0001,
         "offset": 0,
         "palette": ["ff3300", "ff8c00", "ffd700", "a3c400", "5a9216", "2e6b0f"],
@@ -59,10 +61,19 @@ VARIABLES = {
         "scale_meters": 250,
         "quality_band": "SummaryQA",
         "start_year": 2000, "latest_complete_year": CURRENT_COMPLETE_YEAR,
+        "large_region": {
+            "area_threshold_m2": 100_000_000_000,
+            "collection": "MODIS/061/MOD13A3",
+            "band": "NDVI",
+            "scale_meters": 1000,
+            "quality_band": "SummaryQA",
+            "temporal_resolution": "Monthly",
+        },
     },
     "grace_tws": {
         "collection": "NASA/GRACE/MASS_GRIDS_V04/LAND",
         "band": "lwe_thickness_csr",
+        "equal_area": False,
         "scale_factor": 1, "offset": 0,
         "palette": ["8b0000", "ff4500", "ffff99", "87ceeb", "1e90ff", "00008b"],
         "vis_min": -20, "vis_max": 20, "unit": "cm su eşdeğeri",
@@ -72,6 +83,7 @@ VARIABLES = {
     "soil_moisture": {
         "collection": "NASA/SMAP/SPL4SMGP/008",
         "band": "sm_surface",
+        "equal_area": False,
         "scale_factor": 1, "offset": 0,
         "palette": ["8b4513", "d2b48c", "f0e68c", "90ee90", "228b22", "006400"],
         "vis_min": 0, "vis_max": 0.5, "unit": "m³/m³",
@@ -81,6 +93,7 @@ VARIABLES = {
     "precipitation": {
         "collection": "NASA/GPM_L3/IMERG_MONTHLY_V07",
         "band": "precipitation",
+        "equal_area": False,
         "scale_factor": 1, "offset": 0,
         "palette": ["ffffff", "a6d9f7", "67a9cf", "2166ac", "08306b"],
         "vis_min": 0, "vis_max": 1.5, "unit": "mm/hr (annual mean rate)",
@@ -94,6 +107,7 @@ VARIABLES = {
     "total_column_ozone": {
         "collection": "TOMS/MERGED_V4",
         "band": "ozone",
+        "equal_area": False,
         "scale_factor": 1, "offset": 0,
         "palette": ["5e4fa2", "3288bd", "66c2a5", "abdda4", "e6f598", "ffffbf", "fee08b", "fdae61", "f46d43", "d53e4f", "9e0142"],
         "vis_min": 180, "vis_max": 500, "unit": "Dobson units (DU)",
@@ -108,6 +122,7 @@ VARIABLES = {
     "merra2_t2m": {
         "collection": "NASA/GSFC/MERRA/slv/2",
         "band": "T2M",
+        "equal_area": False,
         "scale_factor": 1, "offset": -273.15,
         "palette": ["313695", "4575b4", "74add1", "abd9e9", "e0f3f8", "ffffbf", "fee090", "fdae61", "f46d43", "d73027", "a50026"],
         "vis_min": -40, "vis_max": 45, "unit": "°C (annual mean of hourly values)",
@@ -122,6 +137,7 @@ VARIABLES = {
     "merra2_precipitable_water": {
         "collection": "NASA/GSFC/MERRA/slv/2",
         "band": "TQV",
+        "equal_area": False,
         "scale_factor": 1, "offset": 0,
         "palette": ["fff7ec", "fee8c8", "fdd49e", "fdbb84", "fc8d59", "ef6548", "d7301f", "990000"],
         "vis_min": 0, "vis_max": 70, "unit": "kg/m² (annual mean)",
@@ -136,6 +152,7 @@ VARIABLES = {
     "merra2_evaporation": {
         "collection": "NASA/GSFC/MERRA/flx/2",
         "band": "EVAP",
+        "equal_area": False,
         "scale_factor": 86400, "offset": 0,
         "palette": ["fff7bc", "c7e9b4", "7fcdbb", "41b6c4", "2c7fb8", "253494"],
         "vis_min": 0, "vis_max": 8, "unit": "mm/day (annual mean rate)",
@@ -150,6 +167,7 @@ VARIABLES = {
     "gldas_root_moisture": {
         "collection": "NASA/GLDAS/V021/NOAH/G025/T3H",
         "band": "RootMoist_inst",
+        "equal_area": False,
         "scale_factor": 1, "offset": 0,
         "palette": ["8c510a", "d8b365", "f6e8c3", "c7eae5", "5ab4ac", "01665e"],
         "vis_min": 0, "vis_max": 500, "unit": "kg/m² (annual mean water storage)",
@@ -164,6 +182,7 @@ VARIABLES = {
     "gldas_surface_runoff": {
         "collection": "NASA/GLDAS/V021/NOAH/G025/T3H",
         "band": "Qs_acc",
+        "equal_area": False,
         "scale_factor": 1, "offset": 0,
         "palette": ["ffffcc", "c2e699", "78c679", "31a354", "006837"],
         "vis_min": 0, "vis_max": 1500, "unit": "mm water equivalent (annual total)",
@@ -198,9 +217,19 @@ _REGION_VARIABLES = (
 )
 region_config = {
     variable_id: {
+        "variable_id": variable_id,
         "collection": VARIABLES[variable_id]["collection"],
         "band": VARIABLES[variable_id]["band"],
-        "scale": VARIABLES[variable_id]["scale_meters"],
+        "scale": VARIABLES[variable_id].get(
+            "native_scale_meters",
+            VARIABLES[variable_id]["scale_meters"],
+        ),
+        "equal_area": VARIABLES[variable_id]["equal_area"],
+        "nominal_cell_area_m2": VARIABLES[variable_id].get(
+            "native_scale_meters",
+            VARIABLES[variable_id]["scale_meters"],
+        ) ** 2,
+        "large_region": VARIABLES[variable_id].get("large_region"),
         "aggregate": VARIABLES[variable_id].get("aggregation", "mean"),
         "monthly_first": variable_id in {
             "soil_moisture",

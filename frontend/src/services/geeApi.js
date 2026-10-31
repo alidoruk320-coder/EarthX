@@ -31,7 +31,27 @@ export const GEE_BACKED_LABELS = [
 export const NASA_POWER_LABELS = ["Temperature", "Precipitation"];
 
 async function request(path, options) {
-  const response = await fetch(`${API_BASE}${path}`, options);
+  const { timeoutMs, timeoutMessage, ...fetchOptions } = options || {};
+  const timeoutController = timeoutMs ? new AbortController() : null;
+  const timeoutId = timeoutController
+    ? setTimeout(() => timeoutController.abort(), timeoutMs)
+    : null;
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...fetchOptions,
+      ...(timeoutController ? { signal: timeoutController.signal } : {}),
+    });
+  } catch (error) {
+    if (timeoutController?.signal.aborted) {
+      const timeoutError = new Error(timeoutMessage || "Analysis request timed out");
+      timeoutError.code = "ANALYSIS_TIMEOUT";
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
   if (!response.ok) {
     const detail = await response.json().catch(() => null);
     const error = new Error(detail?.detail || `Earth Engine API error (${response.status})`);
@@ -68,9 +88,45 @@ export function analyzeRegionGEE(geometry, variableLabel, startYear, endYear) {
   const variable = LABEL_TO_ID[variableLabel];
   if (!variable) throw new Error(`Unsupported Earth Engine variable: ${variableLabel}`);
   return request("/analyze-region", {
+    timeoutMs: 180_000,
+    timeoutMessage: "Alan-ağırlıklı poligon analizi 3 dakika içinde tamamlanamadı. Daha küçük bir bölge veya Hızlı tahmin modunu deneyin.",
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ geometry, variable, start_year: startYear, end_year: endYear }),
+  });
+}
+
+export function analyzeSampledSoilMoistureRegion(geometry, samplePoints, startYear, endYear) {
+  return request("/analyze-region", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      geometry,
+      variable: "soil_moisture",
+      start_year: startYear,
+      end_year: endYear,
+      sampling_method: "sampled_boundary_filtered",
+      sample_points: samplePoints.map(({ lat, lon, weight }) => ({ lat, lon, weight })),
+    }),
+  });
+}
+
+export function analyzeSampledRegionGEE(geometry, variableLabel, samplePoints, startYear, endYear) {
+  const variable = LABEL_TO_ID[variableLabel];
+  if (!variable) throw new Error(`Unsupported Earth Engine variable: ${variableLabel}`);
+  return request("/analyze-region", {
+    timeoutMs: 180_000,
+    timeoutMessage: "Hızlı bölgesel analiz 3 dakika içinde tamamlanamadı. Daha küçük bir bölge veya daha kısa dönem seçin.",
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      geometry,
+      variable,
+      start_year: startYear,
+      end_year: endYear,
+      sampling_method: "sampled_boundary_filtered",
+      sample_points: samplePoints.map(({ lat, lon, weight }) => ({ lat, lon, weight })),
+    }),
   });
 }
 
@@ -100,6 +156,11 @@ export function analyzeSeaLevel(lat, lon, startYear, endYear) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lat, lon, variable: "sea_level", start_year: startYear, end_year: endYear }),
   });
+}
+
+export function getSeaLevelAvailability(lat, lon) {
+  const params = new URLSearchParams({ lat: String(lat), lon: String(lon) });
+  return request(`/sea-level-availability?${params}`);
 }
 
 export function getCascadeCorrelation(lat, lon, variableALabel, variableBLabel, startYear, endYear) {

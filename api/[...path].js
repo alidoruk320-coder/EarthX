@@ -2,6 +2,7 @@ const ALLOWED_API_PATHS = [
   /^health$/,
   /^analyze-point$/,
   /^analyze-region$/,
+  /^region-boundary$/,
   /^analyze-series$/,
   /^analyze-sea-level$/,
   /^cascade-correlation$/,
@@ -41,7 +42,7 @@ async function handler(request) {
           : {}),
       },
       ...(["GET", "HEAD"].includes(request.method) ? {} : { body: request.body, duplex: "half" }),
-      signal: AbortSignal.timeout(55_000),
+      signal: AbortSignal.timeout(180_000),
     });
     const headers = new Headers();
     for (const name of ["content-type", "cache-control", "content-disposition"]) {

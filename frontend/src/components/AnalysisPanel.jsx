@@ -146,15 +146,27 @@ export default function AnalysisPanel({
   } = data;
   const reportSource = source;
   const variableDefinition = ANALYSIS_VARIABLES[variable]?.description?.[language] || "";
-  const temporalResolution = ANALYSIS_VARIABLES[variable]?.temporalResolution;
+  const temporalResolution = data.temporalResolution || ANALYSIS_VARIABLES[variable]?.temporalResolution;
   const sourceDocumentationUrl = datasetDocUrl || ANALYSIS_VARIABLES[variable]?.sourceUrl;
 
   const reportSeries = Array.isArray(data.series) ? data.series : [];
-  const verifiedSource = source === "NASA POWER"
+  const repeatedValuePairs = reportSeries.slice(1).flatMap((point, index) => {
+    const previous = reportSeries[index];
+    return Number(point.value) === Number(previous.value)
+      ? [`${previous.year}–${point.year}`]
+      : [];
+  });
+  const supportedSource = source === "NASA POWER"
     || source?.includes("Google Earth Engine")
+    || source === "NOAA CoastWatch blended satellite altimetry"
     || source === "NASA/JPL Sea Level Change Portal";
+  const modelOutput = data.modelOutput === true;
   const validObservations = reportSeries.length >= 8 && reportSeries.every((point) =>
-    Number.isFinite(Number(point.year)) && Number.isFinite(Number(point.value))
+    point.year != null && point.year !== "" && point.value != null && point.value !== ""
+    && Number.isFinite(Number(point.year)) && Number.isFinite(Number(point.value))
+  );
+  const continuousAnnualSeries = validObservations && reportSeries.every((point, index) =>
+    index === 0 || Number(point.year) === Number(reportSeries[index - 1].year) + 1
   );
   const reportEndYear = analysisEndYear ?? year;
   const seriesCoversAnalysisPeriod = reportSeries.length > 0
@@ -166,7 +178,7 @@ export default function AnalysisPanel({
     && Number.isFinite(Number(stats?.pValue))
     && !["Insufficient Data", "Analysis unavailable", "No verified point series"].includes(stats?.trend);
   const canExportReport = Boolean(
-    verifiedSource && datasetId && unit && validObservations && seriesCoversAnalysisPeriod && validCoordinates && validStatistics
+    supportedSource && datasetId && unit && continuousAnnualSeries && seriesCoversAnalysisPeriod && validCoordinates && validStatistics
   );
 
   const hasStatistics = stats?.slope != null
@@ -175,7 +187,11 @@ export default function AnalysisPanel({
     && Number.isFinite(Number(stats.pValue));
   const pValue = hasStatistics ? Number(stats.pValue) : null;
   const confidence = !hasStatistics
-    ? { label: "INSUFFICIENT DATA", tone: "low", note: "A statistical evidence tier cannot be assigned without a valid time series." }
+    ? {
+        label: stats?.testStatus === "unavailable" ? "TEST UNAVAILABLE" : "INSUFFICIENT DATA",
+        tone: "low",
+        note: stats?.message || "A statistical evidence tier cannot be assigned without a valid test result.",
+      }
     : pValue < 0.01
       ? { label: "STRONG EVIDENCE", tone: "high", note: "Strong evidence against no monotonic trend (p < 0.01)." }
       : pValue < 0.05
@@ -183,12 +199,26 @@ export default function AnalysisPanel({
         : { label: "NO SIGNIFICANT EVIDENCE", tone: "low", note: "No statistically significant monotonic trend detected; natural variability remains plausible." };
   const localizedConfidence = isTurkish ? {
     ...confidence,
-    label: !hasStatistics ? "YETERSİZ VERİ" : confidence.tone === "high" ? "GÜÇLÜ İSTATİSTİKSEL KANIT" : confidence.tone === "moderate" ? "İSTATİSTİKSEL KANIT VAR" : "ANLAMLI KANIT YOK",
-    note: !hasStatistics ? "Geçerli zaman serisi olmadan istatistiksel kanıt düzeyi belirlenemez." : confidence.tone === "high" ? "p < 0,01: güçlü kanıt." : confidence.tone === "moderate" ? "p < 0,05: istatistiksel kanıt." : "İstatistiksel olarak anlamlı monoton trend saptanmadı; doğal değişkenlik olası.",
+    label: !hasStatistics
+      ? stats?.testStatus === "unavailable" ? "TEST HESAPLANAMADI" : "YETERSİZ VERİ"
+      : confidence.tone === "high" ? "GÜÇLÜ İSTATİSTİKSEL KANIT" : confidence.tone === "moderate" ? "İSTATİSTİKSEL KANIT VAR" : "ANLAMLI KANIT YOK",
+    note: !hasStatistics
+      ? stats?.message || "Geçerli istatistiksel test sonucu olmadan kanıt düzeyi belirlenemez."
+      : confidence.tone === "high" ? "p < 0,01: güçlü kanıt." : confidence.tone === "moderate" ? "p < 0,05: istatistiksel kanıt." : "İstatistiksel olarak anlamlı monoton trend saptanmadı; doğal değişkenlik olası.",
   } : confidence;
   const trendText = (() => {
     const trend = stats?.trend;
     if (!trend) return isTurkish ? "Sonuç yok" : "No result";
+    if (modelOutput) {
+      return isTurkish
+        ? "Model çıktısı: eğim gösterilir, istatistiksel anlamlılık değerlendirilmez."
+        : "Model output: slope shown; statistical significance is not assessed.";
+    }
+    if (!hasStatistics || stats?.testStatus === "unavailable") {
+      const message = stats?.message;
+      const label = isTurkish ? "İstatistiksel test hesaplanamadı" : "Statistical test could not be calculated";
+      return message ? `${label}: ${message}` : label;
+    }
     if (trend.toLowerCase() === "insufficient data" || trend.toLowerCase() === "insufficient_data") return isTurkish ? "İstatistiksel test için yetersiz veya aralıklı veri" : "Insufficient or discontinuous data for significance test";
     if (trend.toLowerCase() === "analysis unavailable" || trend.toLowerCase() === "no verified point series") return isTurkish ? "Analiz verisi alınamadı" : "Analysis data unavailable";
     if (trend.toLowerCase() === "no trend" || trend === "No clear trend") {
@@ -215,39 +245,64 @@ export default function AnalysisPanel({
     }).format(numericValue);
   };
 
-  function exportBriefing(reportType = "full") {
+  function exportBriefing() {
     if (!canExportReport) return;
     const pdf = new jsPDF({ unit: "mm", format: "a4" });
     const series = reportSeries;
     const values = series.map((point) => point.value);
-    const min = Math.min(...values, 0);
-    const max = Math.max(...values, 1);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
     const range = max - min || 1;
-    const title = reportType === "jury" ? "JURY ONE-PAGER" : reportType === "appendix" ? "DATA APPENDIX" : "SCIENTIFIC BRIEFING";
     const text = (value, x, y, options) => pdf.text(String(value), x, y, options);
+    const methodDescription = !data.regionMode
+      ? "Point analysis at the selected coordinate."
+      : data.method === "polygon_area_weighted"
+        ? "Area-weighted mean of valid source-grid pixels intersecting the selected polygon, calculated separately for each year."
+        : data.method === "polygon_area_weighted_single_cell"
+          ? "The polygon is smaller than a source grid cell (or has no valid area-weighted pixels); the source cell at its center is used. This is not a full polygon area mean."
+        : data.method === "bounding_box_fallback"
+          ? `Approximate regional estimate from ${data.regionSampleCount ?? 0} points in a search bounding box because no boundary polygon was available.`
+          : `Approximate regional estimate from ${data.regionSampleCount ?? 0} boundary-filtered sample points; this is not a full polygon pixel-area reduction.`;
+    const reportNotes = [
+      data.sourceUsed && `Dataset used: ${data.sourceUsed}.`,
+      data.scaleUsed != null && `Polygon analysis scale: ${data.scaleUsed} m.`,
+      data.geometrySimplifyMeters != null && `Geometry simplification tolerance: ${data.geometrySimplifyMeters} m.`,
+      data.aggregationLabel && `Annual aggregation: ${data.aggregationLabel}.`,
+      data.temporalResolution && `Source cadence: ${data.temporalResolution}.`,
+      data.regionMethodNote,
+      data.resolutionWarning,
+      data.sourceWarning,
+      data.coverageMessage,
+      data.missingYearWarning,
+      data.lowCoverageYears?.length > 0
+        && `Low pixel coverage (<3 valid pixels): ${data.lowCoverageYears.join(", ")}.`,
+      data.shortSeriesWarning,
+      repeatedValuePairs.length > 0
+        && `Identical adjacent annual summaries: ${repeatedValuePairs.join(", ")}. Identical values alone are not evidence of a trend.`,
+    ].filter(Boolean);
 
     pdf.setFillColor(16, 46, 58);
     pdf.rect(0, 0, 210, 34, "F");
     pdf.setTextColor(255, 255, 255);
     pdf.setFontSize(18);
-    text(`TWIN EARTH / ${title}`, 16, 16);
+    text("TWIN EARTH / SCIENTIFIC BRIEFING", 16, 16);
     pdf.setFontSize(9);
     text(`Earth System Trend Analysis | ${new Date().toLocaleDateString()}`, 16, 25);
     pdf.setTextColor(20, 35, 43);
     pdf.setFontSize(10);
-    text(`${name} | ${variable} | ${observedStartYear ?? 2002}-${reportEndYear}`, 16, 43);
-    text(`Coordinates: ${Number(lat).toFixed(4)}°, ${Number(lon).toFixed(4)}°`, 16, 49);
-    text(`Verified source: ${reportSource}`, 16, 55);
+    text(`${name} | ${variable} | observed years: ${observedStartYear}-${observedEndYear}`, 16, 43, { maxWidth: 178 });
+    text(`${data.regionMode ? "Region bounding-box midpoint" : "Point coordinate"}: ${Number(lat).toFixed(4)}°, ${Number(lon).toFixed(4)}°`, 16, 49);
+    text(`Data source: ${reportSource}`, 16, 55);
     text(`Dataset: ${datasetId} | Unit: ${unit} | Annual observations: ${series.length}`, 16, 61, { maxWidth: 178 });
     pdf.setFontSize(14);
     pdf.setTextColor(23, 107, 125);
     text("Executive finding", 16, 73);
     pdf.setFontSize(10);
     pdf.setTextColor(20, 35, 43);
-    text(`${stats?.trend || "Unresolved trend"}. Evidence tier: ${confidence.label.toLowerCase()}.`, 16, 81);
+    text(`${stats?.trend || "Unresolved trend"}. Statistical evidence label: ${confidence.label.toLowerCase()}.`, 16, 81, { maxWidth: 178 });
 
-    const evidenceTier = confidence.tone === "high" ? "HIGH" : confidence.tone === "moderate" ? "MODERATE" : "NONE";
-    const cards = [["Sen's slope", `${stats?.slope ?? "-"} /yr`], ["MK Z-score", stats?.zScore ?? "-"], ["p-value", formatPValue(stats?.pValue)], ["Evidence tier", evidenceTier]];
+    const evidenceTier = confidence.tone === "high" ? "HIGH" : confidence.tone === "moderate" ? "MODERATE" : "NOT SIGNIFICANT";
+    const cards = [["Sen's slope", `${stats?.slope ?? "-"} ${unit}/year`], ["Hamed-Rao MK Z", stats?.zScore ?? "-"], ["p-value", formatPValue(stats?.pValue)], ["Evidence tier", evidenceTier]];
     cards.forEach(([label, value], index) => {
       const x = 16 + index * 45;
       pdf.setDrawColor(184, 201, 207);
@@ -258,81 +313,107 @@ export default function AnalysisPanel({
       text(label, x + 3, 98);
       pdf.setTextColor(20, 35, 43);
       pdf.setFontSize(9);
-      text(value, x + 3, 107);
+      text(value, x + 3, 107, { maxWidth: 35 });
     });
 
-    if (reportType !== "jury") {
-      pdf.setTextColor(23, 107, 125);
-      pdf.setFontSize(14);
-      text("Observed trajectory", 16, 128);
-      pdf.setDrawColor(150, 175, 181);
-      pdf.line(22, 174, 190, 174);
-      pdf.line(22, 134, 22, 174);
-      pdf.setDrawColor(239, 127, 66);
-      pdf.setLineWidth(0.8);
-      series.forEach((point, index) => {
-        if (!index) return;
-        const previous = series[index - 1];
-        const x1 = 22 + ((index - 1) / Math.max(series.length - 1, 1)) * 168;
-        const x2 = 22 + (index / Math.max(series.length - 1, 1)) * 168;
-        const y1 = 174 - ((previous.value - min) / range) * 38;
-        const y2 = 174 - ((point.value - min) / range) * 38;
-        pdf.line(x1, y1, x2, y2);
-        pdf.setFillColor(239, 127, 66);
-        pdf.circle(x2, y2, 1, "F");
-      });
-      pdf.setTextColor(23, 107, 125);
-      pdf.setFontSize(14);
-      text("Annual magnitude", 16, 194);
-      series.forEach((point, index) => {
-        const barWidth = Math.max(3, 150 / Math.max(series.length, 1));
-        const height = ((point.value - min) / range) * 25;
-        pdf.setFillColor(40, 127, 145);
-        pdf.rect(22 + index * (150 / Math.max(series.length, 1)), 229 - height, barWidth, height, "F");
-      });
-    }
-
-    const confidenceY = reportType === "jury" ? 130 : 240;
     pdf.setTextColor(23, 107, 125);
     pdf.setFontSize(14);
-    text("Confidence assessment", 16, confidenceY);
+    text(`Observed annual trajectory (${unit})`, 16, 128);
+    pdf.setDrawColor(150, 175, 181);
+    pdf.line(22, 174, 190, 174);
+    pdf.line(22, 134, 22, 174);
+    pdf.setDrawColor(239, 127, 66);
+    pdf.setLineWidth(0.8);
+    series.forEach((point, index) => {
+      const x = 22 + (index / Math.max(series.length - 1, 1)) * 168;
+      const y = 174 - ((point.value - min) / range) * 38;
+      if (index > 0) {
+        const previous = series[index - 1];
+        const previousX = 22 + ((index - 1) / Math.max(series.length - 1, 1)) * 168;
+        const previousY = 174 - ((previous.value - min) / range) * 38;
+        pdf.line(previousX, previousY, x, y);
+      }
+      pdf.setFillColor(239, 127, 66);
+      pdf.circle(x, y, 1, "F");
+    });
+    pdf.setTextColor(20, 35, 43);
+    pdf.setFontSize(8);
+    text(String(observedStartYear), 22, 181);
+    text("Year", 102, 181);
+    text(String(observedEndYear), 184, 181);
+
+    const confidenceY = 198;
+    pdf.setTextColor(23, 107, 125);
+    pdf.setFontSize(14);
+    text("Statistical evidence", 16, confidenceY);
     pdf.setTextColor(20, 35, 43);
     pdf.setFontSize(10);
     text(`${confidence.label}: ${confidence.note}`, 16, confidenceY + 10, { maxWidth: 175 });
     text("Decision threshold: p < 0.05. This evidence tier is not a probability that the trend is true.", 16, confidenceY + 19, { maxWidth: 178 });
 
-    if (reportType !== "jury") {
-      pdf.addPage();
+    pdf.addPage();
+    const addAppendixHeader = (title) => {
       pdf.setFillColor(16, 46, 58);
       pdf.rect(0, 0, 210, 28, "F");
       pdf.setTextColor(255, 255, 255);
       pdf.setFontSize(15);
-      text("DATA APPENDIX / ANNUAL OBSERVATIONS", 16, 17);
-      pdf.setTextColor(20, 35, 43);
-      pdf.setFontSize(9);
-      text(`${name} | ${Number(lat).toFixed(4)}°, ${Number(lon).toFixed(4)}° | ${source}`, 16, 38, { maxWidth: 178 });
+      text(title, 16, 17);
+    };
+    addAppendixHeader("METHOD, LIMITATIONS & ANNUAL OBSERVATIONS");
+    pdf.setTextColor(20, 35, 43);
+    pdf.setFontSize(9);
+    let appendixY = 37;
+    const addWrappedNote = (label, value) => {
+      const lines = pdf.splitTextToSize(`${label}: ${value}`, 178);
+      const requiredHeight = lines.length * 4 + 3;
+      if (appendixY + requiredHeight > 276) {
+        pdf.addPage();
+        addAppendixHeader("METHOD & DATA NOTES (CONTINUED)");
+        appendixY = 37;
+      }
+      pdf.text(lines, 16, appendixY);
+      appendixY += requiredHeight;
+    };
+    addWrappedNote("Spatial method", methodDescription);
+    addWrappedNote("Trend method", "Sen's slope estimates the rate of change per year. The Hamed-Rao modified Mann-Kendall test evaluates monotonic-trend evidence; significance is assessed at p < 0.05.");
+    reportNotes.forEach((note) => addWrappedNote("Data note", note));
+
+    const addTableHeader = () => {
+      pdf.setFillColor(220, 235, 237);
+      pdf.rect(16, appendixY, 178, 8, "F");
       pdf.setTextColor(23, 107, 125);
       pdf.setFontSize(8);
-      pdf.setFillColor(220, 235, 237);
-      pdf.rect(16, 46, 178, 8, "F");
-      text(`YEAR          VALUE (${unit})          YEAR-OVER-YEAR CHANGE`, 19, 52);
+      text(`YEAR                 VALUE (${unit})                 YEAR-ON-YEAR CHANGE`, 19, appendixY + 6);
+      appendixY += 14;
       pdf.setTextColor(20, 35, 43);
-      let tableY = 61;
-      series.forEach((point, index) => {
-        const delta = index ? (point.value - series[index - 1].value).toFixed(3) : "-";
-        if (tableY > 278) {
-          pdf.addPage();
-          tableY = 20;
-        }
-        text(`${point.year}          ${point.value}          ${delta}`, 19, tableY);
-        tableY += 6;
-      });
+      pdf.setFontSize(8);
+    };
+    if (appendixY + 24 > 276) {
+      pdf.addPage();
+      addAppendixHeader("ANNUAL OBSERVATIONS");
+      appendixY = 37;
     }
+    addTableHeader();
+    series.forEach((point, index) => {
+      if (appendixY > 276) {
+        pdf.addPage();
+        addAppendixHeader("ANNUAL OBSERVATIONS (CONTINUED)");
+        appendixY = 37;
+        addTableHeader();
+      }
+      const delta = index ? Number(point.value) - Number(series[index - 1].value) : null;
+      text(`${point.year}                 ${String(point.value)}                 ${delta == null ? "-" : String(delta)}`, 19, appendixY);
+      appendixY += 5;
+    });
 
     pdf.setTextColor(102, 128, 138);
     pdf.setFontSize(8);
-    text(`${reportSource} observations; derived statistics are estimates, not a guarantee of 100% accuracy.`, 16, 286, { maxWidth: 178 });
-    pdf.save(`TwinEarth-${title.toLowerCase().replaceAll(" ", "-")}-${name.replaceAll(/[^a-z0-9]+/gi, "-")}.pdf`);
+    const footer = "Descriptive analysis only; it does not establish causation. A p-value is not the probability that a trend is true.";
+    for (let page = 1; page <= pdf.getNumberOfPages(); page += 1) {
+      pdf.setPage(page);
+      text(footer, 16, 286, { maxWidth: 178 });
+    }
+    pdf.save(`TwinEarth-scientific-briefing-${name.replaceAll(/[^a-z0-9]+/gi, "-")}.pdf`);
   }
 
   return (
@@ -373,11 +454,9 @@ export default function AnalysisPanel({
       </div>}
 
       <div className="pdfActions">
-        <button className="briefingButton" disabled={!canExportReport} title={!canExportReport ? (isTurkish ? "PDF için doğrulanmış kaynak, koordinat, istatistik ve en az 8 gözlem gerekir." : "PDF requires a verified source, coordinates, statistics, and at least 8 observations.") : undefined} onClick={() => exportBriefing("full")}>▣ {isTurkish ? "TAM BİLİMSEL BRİFİNG PDF" : "FULL SCIENTIFIC BRIEFING PDF"}</button>
-        <button className="briefingButton secondary" disabled={!canExportReport} title={!canExportReport ? (isTurkish ? "PDF için doğrulanmış kaynak ve yeterli veri gerekir." : "PDF requires a verified source and sufficient data.") : undefined} onClick={() => exportBriefing("appendix")}>▤ {isTurkish ? "VERİ EKİ PDF" : "DATA APPENDIX PDF"}</button>
-        <button className="briefingButton secondary" disabled={!canExportReport} title={!canExportReport ? (isTurkish ? "PDF için doğrulanmış kaynak ve yeterli veri gerekir." : "PDF requires a verified source and sufficient data.") : undefined} onClick={() => exportBriefing("jury")}>◉ {isTurkish ? "JÜRİ TEK SAYFA PDF" : "JURY ONE-PAGER PDF"}</button>
+        <button className="briefingButton" disabled={!canExportReport} title={!canExportReport ? (isTurkish ? "PDF için kaynak, koordinat, istatistik ve en az 8 kesintisiz yıllık gözlem gerekir." : "PDF requires a source, coordinates, statistics, and at least 8 consecutive annual observations.") : undefined} onClick={exportBriefing}>▣ {isTurkish ? "TAM BİLİMSEL BRİFİNG PDF" : "FULL SCIENTIFIC BRIEFING PDF"}</button>
       </div>
-      {!canExportReport && <small className="pdfGateNote">{isTurkish ? "Rapor beklemede: doğrulanmış kaynak, koordinat ve istatistiklerin yanı sıra en az 8 geçerli gözlem gerekir." : "Report unavailable: a verified source, coordinates, statistics, and at least 8 valid observations are required."}</small>}
+      {!canExportReport && <small className="pdfGateNote">{isTurkish ? "Rapor beklemede: kaynak, koordinat ve istatistiklerin yanı sıra en az 8 kesintisiz yıllık gözlem gerekir." : "Report unavailable: a source, coordinates, statistics, and at least 8 consecutive annual observations are required."}</small>}
 
       <div className="analysisTitleRow">
 
@@ -399,6 +478,20 @@ export default function AnalysisPanel({
 
       </div>
 
+      {data.regionType && <small className="coverageNote">
+        {isTurkish ? `Bölge türü: ${data.regionType}${data.boundarySource ? ` · Sınır kaynağı: ${data.boundarySource}` : ""}` : `Region type: ${data.regionType}${data.boundarySource ? ` · Boundary source: ${data.boundarySource}` : ""}`}
+      </small>}
+      {data.displayYearNote && <div className="dataQualityAlert displayYearNote" role="note">
+        <strong>{isTurkish ? "ZAMAN KAYDIRICISI VE İSTATİSTİK" : "TIMELINE YEAR AND STATISTICS"}</strong>
+        <p>{data.displayYearNote}</p>
+      </div>}
+      {data.boundaryWarning && <div className="dataQualityAlert" role="alert">
+        <strong>{isTurkish ? "SINIR POLİGONU BULUNAMADI" : "BOUNDARY POLYGON UNAVAILABLE"}</strong>
+        <p>{isTurkish
+          ? "Analiz bounding box içindeki örnek noktalara dayanır; ülke/il alan ortalaması değildir."
+          : "Analysis uses sample points inside the search bounding box; it is not a country or administrative-area mean."}</p>
+      </div>}
+
       {variableDefinition && <small className="coverageNote variableDefinition">{variableDefinition}</small>}
 
       <small className="coverageNote">
@@ -412,10 +505,16 @@ export default function AnalysisPanel({
       {data.aggregationLabel && <small className="coverageNote">
         {isTurkish ? `Yıllık işlem: ${data.aggregationLabel}${data.elapsedSeconds != null ? ` · Hesaplama: ${data.elapsedSeconds} sn` : ""}` : `Annual aggregation: ${data.aggregationLabel}${data.elapsedSeconds != null ? ` · Calculation: ${data.elapsedSeconds} s` : ""}`}
       </small>}
+      {data.scaleUsed != null && <small className="coverageNote">
+        {isTurkish ? `Ölçek: ${Number(data.scaleUsed).toLocaleString("tr-TR")} m` : `Scale: ${Number(data.scaleUsed).toLocaleString("en-US")} m`}
+      </small>}
+      {data.sourceUsed && <small className="coverageNote">
+        {isTurkish ? `Kullanılan ürün: ${data.sourceUsed}` : `Product used: ${data.sourceUsed}`}
+      </small>}
       {data.regionMode && <small className="coverageNote">
         {isTurkish
-          ? `Yöntem: ${data.method === "polygon_area_weighted_single_cell" ? "poligon merkez-hücresi yedeği" : data.method === "polygon_area_weighted" ? "poligon alan-ağırlıklı" : "sınır-filtreli örnekleme"}${data.method?.startsWith("polygon_area_weighted") ? ` · Geçerli piksel/yıl: ${data.validPixelCountRange?.min ?? 0}–${data.validPixelCountRange?.max ?? 0} (en az ${data.validPixelCount ?? 0})` : ` · Kullanılan örnek nokta: ${data.regionSampleCount ?? 0}/16`}`
-          : `Method: ${data.method === "polygon_area_weighted_single_cell" ? "polygon center-cell fallback" : data.method === "polygon_area_weighted" ? "polygon area-weighted" : "boundary-filtered sampling"}${data.method?.startsWith("polygon_area_weighted") ? ` · Valid pixels/year: ${data.validPixelCountRange?.min ?? 0}–${data.validPixelCountRange?.max ?? 0} (minimum ${data.validPixelCount ?? 0})` : ` · Sample points used: ${data.regionSampleCount ?? 0}/16`}`}
+          ? `Yöntem: ${data.method === "bounding_box_fallback" ? "bounding box örneklemesi" : data.method === "polygon_area_weighted_single_cell" ? "poligon merkez-hücresi yedeği" : data.method === "polygon_area_weighted" ? "poligon alan-ağırlıklı" : "sınır-filtreli örnekleme"}${data.method?.startsWith("polygon_area_weighted") ? ` · Geçerli piksel/yıl: ${data.validPixelCountRange?.min ?? 0}–${data.validPixelCountRange?.max ?? 0} (en az ${data.validPixelCount ?? 0})` : ` · Kullanılan örnek nokta: ${data.regionSampleCount ?? 0}/16`}`
+          : `Method: ${data.method === "bounding_box_fallback" ? "bounding-box sampling" : data.method === "polygon_area_weighted_single_cell" ? "polygon center-cell fallback" : data.method === "polygon_area_weighted" ? "polygon area-weighted" : "boundary-filtered sampling"}${data.method?.startsWith("polygon_area_weighted") ? ` · Valid pixels/year: ${data.validPixelCountRange?.min ?? 0}–${data.validPixelCountRange?.max ?? 0} (minimum ${data.validPixelCount ?? 0})` : ` · Sample points used: ${data.regionSampleCount ?? 0}/16`}`}
       </small>}
       {data.resolutionWarning && <small className="coverageNote" role="status">{data.resolutionWarning}</small>}
       {data.lowCoverageYears?.length > 0 && <small className="coverageNote" role="status">
@@ -459,6 +558,19 @@ export default function AnalysisPanel({
       </small>}
 
       {data.coverageMessage && <small className="coverageNote" role="status">{data.coverageMessage}</small>}
+      {data.sourceWarning && <div className="dataQualityAlert" role="status">
+        <strong>{isTurkish ? "VERİ KAYNAĞI NOTU" : "DATA SOURCE NOTE"}</strong>
+        <p>{data.sourceWarning}</p>
+      </div>}
+      {variable === "Sea Level" && <small className="coverageNote">
+        {isTurkish ? `Deniz seviyesi konumu: ${name}` : `Sea-level location: ${name}`}
+      </small>}
+      {repeatedValuePairs.length > 0 && <div className="dataQualityAlert" role="status">
+        <strong>{isTurkish ? `AYNI YILLIK DEĞERLER: ${repeatedValuePairs.join(", ")}` : `REPEATED ANNUAL VALUES: ${repeatedValuePairs.join(", ")}`}</strong>
+        <p>{isTurkish
+          ? `Bu yılların yıllık özetleri kaynak veride sayısal olarak aynı. Uygulama eksik yılları önceki değeri kopyalayarak doldurmaz. ${variable} verisi ${temporalResolution || "kaynağın zaman çözünürlüğünde"} gözlemlerden yıllık ${data.aggregationLabel || "özet"} olarak hesaplanır; aynı sonuç, yıllık agregalar gerçekten eşitse veya poligon kaynak hücresinden küçük olduğu için tek hücre kullanılıyorsa görülebilir. Bu, kendi başına anlamlı trend kanıtı değildir.`
+          : `The source-derived annual summaries for these years are numerically identical. The app does not fill missing years by copying the previous value. ${variable} is reduced from ${temporalResolution || "the source cadence"} observations to an annual ${data.aggregationLabel || "summary"}; equal values can occur when annual aggregates match or when a sub-cell polygon uses one source cell. This alone is not evidence of a significant trend.`}</p>
+      </div>}
       {data.errorMessage && <small className="coverageNote" role="status">{data.errorMessage}</small>}
       {stats?.message && <small className="coverageNote" role="status">{stats.message}</small>}
 
@@ -486,35 +598,47 @@ export default function AnalysisPanel({
           </strong>
         </div>
 
-        <div className="infoCard">
-          <span>Mann-Kendall Z</span>
-          <strong>
-            {stats?.zScore ?? "—"}
-          </strong>
-        </div>
+        {!modelOutput && <>
+          <div className="infoCard">
+            <span>Mann-Kendall Z</span>
+            <strong>
+              {stats?.zScore ?? "—"}
+            </strong>
+          </div>
 
-        <div className="infoCard">
-          <span>p-değeri</span>
-          <strong>
-            {formatPValue(stats?.pValue)}
-          </strong>
-        </div>
+          <div className="infoCard">
+            <span>p-değeri</span>
+            <strong>
+              {formatPValue(stats?.pValue)}
+            </strong>
+          </div>
 
-        <div className="infoCard">
-          <span>{isTurkish ? "Yön" : "Direction"}</span>
-          <strong>
-            {!hasStatistics
-              ? "—"
-              : stats?.slope > 0
-              ? (isTurkish ? "ARTIYOR" : "INCREASING")
-              : stats?.slope < 0
-              ? (isTurkish ? "AZALIYOR" : "DECREASING")
-              : (isTurkish ? "YOK" : "NONE")}
-          </strong>
-        </div>
+          <div className="infoCard">
+            <span>{isTurkish ? "Yön" : "Direction"}</span>
+            <strong>
+              {!hasStatistics
+                ? "—"
+                : stats?.slope > 0
+                ? (isTurkish ? "ARTIYOR" : "INCREASING")
+                : stats?.slope < 0
+                ? (isTurkish ? "AZALIYOR" : "DECREASING")
+                : (isTurkish ? "YOK" : "NONE")}
+            </strong>
+          </div>
+        </>}
 
       </div>
 
+      {stats?.testMethod && <small className="coverageNote">
+        {isTurkish ? "Mann–Kendall yöntemi: " : "Mann–Kendall method: "}
+        {stats.testMethod === "mann_kendall_classic"
+          ? (isTurkish ? "klasik test (Hamed–Rao geçersiz sonuç verdi)" : "classic test (Hamed–Rao returned an invalid result)")
+          : stats.testMethod === "constant_series_exact"
+            ? (isTurkish ? "sabit seri için kesin sonuç" : "exact result for a constant series")
+            : (isTurkish ? "Hamed–Rao düzeltmeli test" : "Hamed–Rao modified test")}
+      </small>}
+
+      {!modelOutput && <>
       <div className="significanceBox">
 
         <span>
@@ -523,7 +647,9 @@ export default function AnalysisPanel({
 
         <strong>
           {!hasStatistics
-            ? (isTurkish ? "YETERSİZ VERİ" : "INSUFFICIENT DATA")
+            ? stats?.testStatus === "unavailable"
+              ? (isTurkish ? "TEST HESAPLANAMADI" : "TEST UNAVAILABLE")
+              : (isTurkish ? "YETERSİZ VERİ" : "INSUFFICIENT DATA")
             : (stats?.significant ?? pValue < 0.05)
             ? (isTurkish ? "ANLAMLI" : "SIGNIFICANT")
             : (isTurkish ? "ANLAMSIZ" : "NOT SIGNIFICANT")}
@@ -540,15 +666,20 @@ export default function AnalysisPanel({
         <div className={`confidenceScale ${localizedConfidence.tone}`} aria-label={localizedConfidence.label}><span /><span /><span /></div>
         <small>{localizedConfidence.note}</small>
       </div>
+      </>}
 
       <div className="scienceNote">
 
           <strong>{isTurkish ? "Yöntem" : "Method"}</strong>
 
         <p>
-          {isTurkish
-            ? `Hamed–Rao düzeltmeli Mann–Kendall testi monoton trend kanıtını değerlendirir; Sen eğimi değişim hızını ölçer. ${mapLayerTitle ? `Haritadaki ${mapLayerTitle} renkleri seçili görüntü değerlerini gösterir; tek başına zaman içindeki değişimi veya anlamlı trendi kanıtlamaz.` : ""} Analiz, seçili değişkenin koordinattaki yıllık serisine uygulanır.`
-            : `The Hamed–Rao modified Mann–Kendall test evaluates evidence for a monotonic trend; Sen's slope estimates its rate. ${mapLayerTitle ? `Map colors in ${mapLayerTitle} show selected image values; they do not by themselves establish change over time or a significant trend.` : ""} The test uses the selected variable's annual series at the chosen coordinate.`}
+          {modelOutput
+            ? (isTurkish
+              ? "Bu HYCOM model çıktısıdır. Model sürüm geçişleri basamaklı değişimler yaratabileceğinden istatistiksel anlamlılık raporlanmaz; yalnız eğim ve kaynak uyarısı gösterilir."
+              : "This is HYCOM model output. Model-version transitions can create step changes, so statistical significance is not reported; only the slope and source warning are shown.")
+            : isTurkish
+              ? `${stats?.testMethod === "mann_kendall_classic" ? "Klasik Mann–Kendall testi" : "Hamed–Rao düzeltmeli Mann–Kendall testi"} monoton trend kanıtını değerlendirir; Sen eğimi değişim hızını ölçer. ${mapLayerTitle ? `Haritadaki ${mapLayerTitle} renkleri seçili görüntü değerlerini gösterir; tek başına zaman içindeki değişimi veya anlamlı trendi kanıtlamaz.` : ""} Analiz, seçili değişkenin yıllık serisine uygulanır.`
+              : `The ${stats?.testMethod === "mann_kendall_classic" ? "classic Mann–Kendall test" : "Hamed–Rao modified Mann–Kendall test"} evaluates evidence for a monotonic trend; Sen's slope estimates its rate. ${mapLayerTitle ? `Map colors in ${mapLayerTitle} show selected image values; they do not by themselves establish change over time or a significant trend.` : ""} The test uses the selected variable's annual series.`}
         </p>
 
       </div>

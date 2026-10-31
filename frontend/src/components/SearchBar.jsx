@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { searchPlace } from "../api/geocoder";
+import { resolvePlaceBoundary, searchPlace } from "../api/geocoder";
 
 export default function SearchBar({ onSearch, language = "en" }) {
     const isTurkish = language === "tr";
@@ -10,10 +10,11 @@ export default function SearchBar({ onSearch, language = "en" }) {
     const [results, setResults] = useState([]);
 
     const [loading, setLoading] = useState(false);
+    const selectedTextRef = useRef("");
 
     useEffect(() => {
 
-        if (text.trim().length < 2) {
+        if (text.trim().length < 2 || text === selectedTextRef.current) {
 
             setResults([]);
             return;
@@ -46,13 +47,20 @@ export default function SearchBar({ onSearch, language = "en" }) {
 
     }, [text]);
 
-    function selectPlace(place) {
-
+    async function selectPlace(place) {
+        setLoading(true);
         setText(place.display_name);
-
         setResults([]);
-
-        onSearch(place);
+        selectedTextRef.current = place.display_name;
+        try {
+            const resolvedPlace = await resolvePlaceBoundary(place, text);
+            onSearch(resolvedPlace);
+        } catch (error) {
+            console.warn("Boundary resolution did not complete; using the original place result:", error);
+            onSearch({ ...place, boundary_warning: "boundary_unavailable_bbox_fallback" });
+        } finally {
+            setLoading(false);
+        }
 
     }
 
@@ -80,7 +88,10 @@ export default function SearchBar({ onSearch, language = "en" }) {
 
                     value={text}
 
-                    onChange={(e) => setText(e.target.value)}
+                    onChange={(e) => {
+                        selectedTextRef.current = "";
+                        setText(e.target.value);
+                    }}
 
                     onKeyDown={handleEnter}
 

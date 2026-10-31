@@ -9,13 +9,13 @@ EarthVerse turns NASA Earth-observation and model data into an interactive trend
 The app covers the challenge's core workflow:
 
 1. **Choose a measurable Earth-system variable.** The analysis catalog describes each product, band, unit, temporal cadence, period, and source. Available examples include NASA POWER, MODIS, SMAP, GRACE/GRACE-FO, GPM IMERG, MERRA-2, GLDAS, a merged TOMS/OMI ozone record, and NASA/JPL sea-level anomaly.
-2. **Choose a place or coordinate.** Point analysis requests the data at the chosen coordinate. Place-level analysis currently summarizes nine sample points from the search-result bounding box; it is an exploratory regional proxy, not a polygon-wide area-weighted estimate.
+2. **Choose a place or coordinate.** Point analysis requests data at the chosen coordinate. Search prefers an administrative polygon, tries the matching OSM object if search returns a Point, and then tries a FAO GAUL administrative boundary. If no polygon is available, the panel explicitly labels the bounding-box fallback. Fast mode is a sampled estimate; polygon mode performs the area-weighted GEE reduction where supported.
 3. **Inspect the time series.** Source observations are aggregated to annual values for the trend workflow and shown with the selected period and units. The original cadence and product are disclosed so annual averages are not mistaken for annual totals.
 4. **Assess the trend.** The backend reports Sen's slope and Hamed–Rao modified Mann–Kendall results. It requires at least eight continuous annual observations and withholds a significance result when years are missing. A non-significant result is reported as inconclusive evidence, not proof of no change.
 
 ## Suggested live demo (about 3 minutes)
 
-1. Start with the country/region search and show the boundary, then explain that the regional summary samples nine points and the coordinate tool is the precise point-analysis mode.
+1. Search for a country or region and verify the displayed boundary source/type. Explain the distinction between fast sampled estimates and area-weighted polygon analysis; the panel shows the method and actual sample or valid-pixel counts.
 2. Select a variable with a clearly documented product and cadence. Show the source, unit, annual chart, observation count, Sen slope, p-value, and significance interpretation together.
 3. Open **Global Story** and compare baseline imagery with the selected year. Point out that imagery is visual context; the numerical trend comes from the named analysis dataset.
 4. Open **Regional contrast in sea level**. Run both live NASA/JPL series and let the returned slopes and p-values determine whether this pair actually demonstrates opposite directions. Do not claim significance if either p-value is at least 0.05 or unavailable.
@@ -28,6 +28,7 @@ The app covers the challenge's core workflow:
 - TOMS/OMI is the merged TOMS/OMI product, not an OMI-only record.
 - NASA POWER temperature and precipitation point series are separate from the MODIS/GPM rendered map layers. The interface should keep this distinction visible.
 - The trend map shows annual slope/ranking, not pixel-level significance. Point-series significance must not be inferred from map colors.
+- The timeline year selects imagery. Trend statistics use the complete annual time series and therefore remain the same when only the imagery year changes.
 - Annual aggregation reduces seasonal variation but is not a full seasonal-cycle removal or a causal attribution analysis.
 - Sea-level anomaly is an ocean-grid measurement, not a coastal tide-gauge or inland measurement. GRACE V04 land data end in 2016; each product has its own temporal coverage.
 - Live NASA, Earth Engine, GBIF, geocoding, and Vercel backend behavior depends on network access, upstream availability, credentials, and deployment environment variables. A successful frontend build does not validate those services.
@@ -39,7 +40,8 @@ Before submitting, have a teammate who did not build the app complete this check
 - [ ] `/api/health` returns a healthy backend response and Earth Engine readiness is true.
 - [ ] A point analysis succeeds for one land variable, NASA POWER temperature, NASA POWER precipitation, and an offshore sea-level coordinate; an inland sea-level query clearly reports no ocean data.
 - [ ] A low-coverage variable (for example, GRACE after 2016) shows its real coverage and does not fabricate later observations.
-- [ ] The regional summary is labeled as nine equally weighted bbox sample points.
+- [ ] Verify boundary polygons, the displayed region type/source, the fast sample count, and the polygon valid-pixel count for the tested location.
+- [ ] Verify the left search, layer gallery, and discoveries drawer do not overlap at the target presentation viewport.
 - [ ] The sea-level contrast demo returns two charts, source/product, period, units, observation counts, slopes, and p-values; the direction statement matches the actual returned data.
 - [ ] Story imagery year, numerical-analysis year, and source are visibly distinguished.
 - [ ] Impact mode either returns its documented exposure metrics or shows an actionable service error; it is not described as causal impact.

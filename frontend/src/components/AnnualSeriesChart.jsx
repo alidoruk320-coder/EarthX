@@ -1,6 +1,6 @@
 function formatNumber(value, language) {
   return new Intl.NumberFormat(language === "tr" ? "tr-TR" : "en-US", {
-    maximumFractionDigits: 3,
+    maximumFractionDigits: 6,
   }).format(value);
 }
 

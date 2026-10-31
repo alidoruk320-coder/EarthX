@@ -23,6 +23,8 @@ class RegionAnalysisRequest(BaseModel):
     variable: str = Field(min_length=1)
     start_year: int = Field(ge=1970, le=2100)
     end_year: int = Field(ge=1970, le=2100)
+    sampling_method: str | None = None
+    sample_points: list[dict] = Field(default_factory=list, max_length=16)
 
 
 class CascadeRequest(BaseModel):

@@ -2,6 +2,11 @@
   "buildCommand": "npm run build",
   "outputDirectory": "frontend/dist",
   "installCommand": "npm install",
+  "functions": {
+    "api/*.js": {
+      "maxDuration": 300
+    }
+  },
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
