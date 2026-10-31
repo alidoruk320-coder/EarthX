@@ -28,43 +28,77 @@ class RegionAnalysisTests(unittest.TestCase):
         with region_analysis._cache_lock:
             region_analysis._cache.clear()
 
+    def test_geometry_collection_is_reduced_to_polygon_members(self):
+        second = {
+            "type": "Polygon",
+            "coordinates": [[[30, 41], [30.2, 41], [30.2, 41.2], [30, 41.2], [30, 41]]],
+        }
+        collection = {
+            "type": "GeometryCollection",
+            "geometries": [
+                POLYGON,
+                {"type": "Point", "coordinates": [99, 99]},
+                {"type": "LineString", "coordinates": [[0, 0], [1, 1]]},
+                {"type": "MultiPolygon", "coordinates": [second["coordinates"]]},
+            ],
+        }
+        normalized = region_analysis._normalize_geometry(collection)
+        self.assertEqual(normalized["type"], "MultiPolygon")
+        self.assertEqual(normalized["coordinates"], [POLYGON["coordinates"], second["coordinates"]])
+
+    def test_single_polygon_geometry_collection_remains_polygon(self):
+        collection = {
+            "type": "GeometryCollection",
+            "geometries": [POLYGON, {"type": "Point", "coordinates": [0, 0]}],
+        }
+        self.assertEqual(region_analysis._normalize_geometry(collection), POLYGON)
+
     def test_weighted_mean_matches_manual_numerator_over_denominator(self):
         # Two valid pixels: (10 × 1 m² + 20 × 3 m²) / 4 m² = 17.5.
-        row = feature(2000, numerator=70, denominator=4, pixels=2)
+        row = feature(2001, numerator=70, denominator=4, pixels=2)
         with patch.object(region_analysis, "_fetch_ee_features", return_value=[row]):
-            result = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2000)
+            result = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2001)
         self.assertEqual(result["raw_series"][0]["value"], 17.5)
         self.assertEqual(result["method"], "polygon_area_weighted")
+        self.assertEqual(result["partial_year_excluded"], [2000])
+
+    def test_analyze_region_normalizes_geometry_collection_before_fetch(self):
+        collection = {"type": "GeometryCollection", "geometries": [POLYGON]}
+        row = feature(2001, 1, 1)
+        with patch.object(region_analysis, "_fetch_ee_features", return_value=[row]) as fetch:
+            result = region_analysis.analyze_region(collection, "ndvi", 2000, 2001)
+        self.assertEqual(fetch.call_args.args[0], POLYGON)
+        self.assertEqual(result["raw_series"][0]["year"], 2001)
 
     def test_empty_polygon_years_fall_back_to_center_cell_or_return_clear_error(self):
-        empty = feature(2000, numerator=None, denominator=0, center_value=None, pixels=0)
+        empty = feature(2001, numerator=None, denominator=0, center_value=None, pixels=0)
         with patch.object(region_analysis, "_fetch_ee_features", return_value=[empty]):
-            result = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2000)
+            result = region_analysis.analyze_region(POLYGON, "ndvi", 2001, 2001)
         self.assertEqual(result["status"], "insufficient_data")
         self.assertEqual(result["raw_series"], [])
         self.assertIn("No valid source pixels", result["message"])
 
         # Even a non-empty but sub-pixel denominator uses the requested center cell.
-        center_cell = feature(2000, numerator=99, denominator=1, center_value=0.42, pixels=1, area=100)
+        center_cell = feature(2001, numerator=99, denominator=1, center_value=0.42, pixels=1, area=100)
         with patch.object(region_analysis, "_fetch_ee_features", return_value=[center_cell]):
-            result = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2000)
+            result = region_analysis.analyze_region(POLYGON, "ndvi", 2001, 2001)
         self.assertEqual(result["method"], "polygon_area_weighted_single_cell")
         self.assertEqual(result["raw_series"][0]["value"], 0.42)
         self.assertIn("resolution_warning", result)
 
     def test_low_pixel_coverage_and_short_series_warnings_are_returned(self):
-        rows = [feature(year, year / 10, 1, pixels=1) for year in range(2000, 2007)]
+        rows = [feature(year, year / 10, 1, pixels=1) for year in range(2001, 2008)]
         with patch.object(region_analysis, "_fetch_ee_features", return_value=rows):
-            result = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2006)
-        self.assertEqual(result["low_coverage_years"], list(range(2000, 2007)))
+            result = region_analysis.analyze_region(POLYGON, "ndvi", 2001, 2007)
+        self.assertEqual(result["low_coverage_years"], list(range(2001, 2008)))
         self.assertIn("short_series_warning", result)
 
     def test_missing_requested_year_withholds_mann_kendall_significance(self):
-        rows = [feature(year, year * 2, 1) for year in range(2000, 2017) if year != 2005]
+        rows = [feature(year, year * 2, 1) for year in range(2001, 2018) if year != 2006]
         with patch.object(region_analysis, "_fetch_ee_features", return_value=rows), \
              patch("app.services.trend_engine.mk.hamed_rao_modification_test") as mann_kendall:
-            result = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2016)
-        self.assertEqual(result["missing_years"], [2005])
+            result = region_analysis.analyze_region(POLYGON, "ndvi", 2001, 2017)
+        self.assertEqual(result["missing_years"], [2006])
         self.assertIsNone(result["p_value"])
         self.assertFalse(result["significant"])
         self.assertTrue(result["significance_withheld"])
@@ -150,6 +184,26 @@ class RegionAnalysisTests(unittest.TestCase):
             "21 years should be split into sequential batches of at most five years",
         )
 
+    def test_memory_limited_products_fetch_one_year_per_sequential_request(self):
+        for variable in sorted(region_analysis.MEMORY_LIMITED_REGION_VARIABLES):
+            with self.subTest(variable=variable):
+                fake_ee = MagicMock()
+                fake_ee.Geometry.return_value.area.return_value.getInfo.return_value = 1_000_000_000_000
+                collection = MagicMock()
+                fake_ee.ImageCollection.return_value.filterBounds.return_value = collection
+                collection.map.return_value = collection
+                collection.select.return_value = collection
+                feature_collection = MagicMock()
+                feature_collection.getInfo.return_value = {"features": []}
+                fake_ee.FeatureCollection.return_value = feature_collection
+                fake_ee.List.sequence.return_value.map.return_value = object()
+                cfg = copy.deepcopy(region_config[variable])
+
+                with patch.object(region_analysis, "ee", fake_ee):
+                    region_analysis._fetch_ee_features(POLYGON, cfg, 2018, 2020)
+
+                self.assertEqual(feature_collection.getInfo.call_count, 3)
+
     def test_concurrent_aggregation_error_retries_batch_one_year_at_a_time(self):
         fake_ee = MagicMock()
         fake_ee.Geometry.return_value.area.return_value.getInfo.return_value = 1_000_000_000
@@ -175,10 +229,10 @@ class RegionAnalysisTests(unittest.TestCase):
         self.assertEqual(feature_collection.getInfo.call_count, 3)
 
     def test_identical_region_request_uses_cache(self):
-        rows = [feature(2000, 50, 2, pixels=2)]
+        rows = [feature(2001, 50, 2, pixels=2)]
         with patch.object(region_analysis, "_fetch_ee_features", return_value=rows) as fetch:
-            first = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2000)
-            second = region_analysis.analyze_region(copy.deepcopy(POLYGON), "ndvi", 2000, 2000)
+            first = region_analysis.analyze_region(POLYGON, "ndvi", 2001, 2001)
+            second = region_analysis.analyze_region(copy.deepcopy(POLYGON), "ndvi", 2001, 2001)
         fetch.assert_called_once()
         self.assertFalse(first["cache_hit"])
         self.assertTrue(second["cache_hit"])

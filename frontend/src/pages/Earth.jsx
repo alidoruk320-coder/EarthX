@@ -573,6 +573,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       let unit;
       let temporalResolution;
       let sourceWarning;
+      let partialYearExcluded = [];
+      let firstFullYear = null;
       let regionResponse = null;
       let polygonPreview = null;
 
@@ -602,8 +604,10 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
               const previewSource = ANALYSIS_VARIABLES[variable]?.source || "Google Earth Engine";
               const previewDatasetId = previewResult.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
               const previewUnit = previewResult.unit || ANALYSIS_VARIABLES[variable]?.unit;
+              const previewStartYear = Math.min(...previewSeries.map((point) => point.year));
+              const previewEndYear = Math.max(...previewSeries.map((point) => point.year));
               const previewStatistics = previewSeries.length >= 8
-                ? await analyzeSeries(previewSeries, variable, previewUnit, previewDatasetId, dataStartYear, completeDataEndYear)
+                ? await analyzeSeries(previewSeries, variable, previewUnit, previewDatasetId, previewStartYear, previewEndYear)
                 : null;
               const previewStats = previewStatistics
                 ? mapAnalysisStats(previewStatistics)
@@ -630,6 +634,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
                 datasetDocUrl: ANALYSIS_VARIABLES[variable]?.sourceUrl,
                 temporalResolution: ANALYSIS_VARIABLES[variable]?.temporalResolution,
                 sourceUsed: previewResult.dataset_id || previewDatasetId,
+                partialYearExcluded: previewResult.partial_year_excluded || [],
+                firstFullYear: previewResult.first_full_year ?? null,
                 unit: previewUnit,
                 stats: previewStats,
               };
@@ -659,6 +665,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
             datasetId = polygonPreview.datasetId;
             unit = polygonPreview.unit;
             stats = polygonPreview.stats;
+            partialYearExcluded = polygonPreview.partialYearExcluded || [];
+            firstFullYear = polygonPreview.firstFullYear ?? null;
             regionResponse = { method: "sampled_boundary_filtered", sample_count: polygonPreview.regionSampleCount };
           } else if (variable !== "NDVI / Vegetation" || regionSamplePoints.length === 0) {
             throw polygonError;
@@ -672,11 +680,15 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
             if (!valid.length) throw polygonError;
             series = mergeSeriesForRegion(valid.map(({ result }) => result.raw_series || []), valid.map(({ point }) => point));
             const pointResult = valid[0].result;
+            partialYearExcluded = pointResult.partial_year_excluded || [];
+            firstFullYear = pointResult.first_full_year ?? null;
             source = pointResult.source || ANALYSIS_VARIABLES[variable]?.source || "Google Earth Engine";
             datasetId = pointResult.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
             unit = pointResult.unit || ANALYSIS_VARIABLES[variable]?.unit;
+            const seriesStartYear = Math.min(...series.map((point) => point.year));
+            const seriesEndYear = Math.max(...series.map((point) => point.year));
             const calculated = series.length >= 8
-              ? await analyzeSeries(series, variable, unit, datasetId, dataStartYear, completeDataEndYear)
+              ? await analyzeSeries(series, variable, unit, datasetId, seriesStartYear, seriesEndYear)
               : null;
             stats = calculated
               ? mapAnalysisStats(calculated)
@@ -746,8 +758,10 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         source = ANALYSIS_VARIABLES[variable]?.source || "NASA POWER";
         datasetId = ANALYSIS_VARIABLES[variable]?.datasetId || `NASA POWER daily parameter ${NASA_POWER_SERIES[variable]?.parameter || "unknown"}`;
         unit = ANALYSIS_VARIABLES[variable]?.unit || NASA_POWER_SERIES[variable]?.unit;
+        const seriesStartYear = series.length ? Math.min(...series.map((point) => point.year)) : dataStartYear;
+        const seriesEndYear = series.length ? Math.max(...series.map((point) => point.year)) : completeDataEndYear;
         const calculated = series.length >= 8
-          ? await analyzeSeries(series, variable, unit, datasetId, dataStartYear, completeDataEndYear)
+          ? await analyzeSeries(series, variable, unit, datasetId, seriesStartYear, seriesEndYear)
           : null;
         stats = calculated ? mapAnalysisStats(calculated) : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
       } else if (GEE_BACKED_LABELS.includes(variable)) {
@@ -771,11 +785,15 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
           ? mergeSeriesForRegion(normalisedSeries, regionSamplePoints)
           : mergeSeriesForRegion(normalisedSeries, [{ weight: 1 }]);
         const result = pointResults[0] || {};
+        partialYearExcluded = result.partial_year_excluded || [];
+        firstFullYear = result.first_full_year ?? null;
         datasetId = ANALYSIS_VARIABLES[variable]?.datasetId || result.dataset_id;
         source = ANALYSIS_VARIABLES[variable]?.source || "Google Earth Engine";
         unit = result.unit || ANALYSIS_VARIABLES[variable]?.unit;
+        const seriesStartYear = series.length ? Math.min(...series.map((point) => point.year)) : dataStartYear;
+        const seriesEndYear = series.length ? Math.max(...series.map((point) => point.year)) : completeDataEndYear;
         const calculated = series.length >= 8
-          ? await analyzeSeries(series, variable, unit, datasetId, dataStartYear, completeDataEndYear)
+          ? await analyzeSeries(series, variable, unit, datasetId, seriesStartYear, seriesEndYear)
           : null;
         stats = calculated ? mapAnalysisStats(calculated) : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
       } else if (variable === "Sea Level") {
@@ -869,6 +887,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         regionSampleCount: regionMode ? (regionResponse?.sample_count ?? regionSamplePoints.length) : 0,
         method: regionResponse?.method || (regionMode ? "sampled_boundary_filtered" : "point"),
         validPixelCount: regionResponse?.valid_pixel_count ?? null,
+        partialYearExcluded: regionResponse?.partial_year_excluded ?? partialYearExcluded,
+        firstFullYear: regionResponse?.first_full_year ?? firstFullYear,
         validPixelCountRange: regionResponse?.valid_pixel_count_range ?? null,
         resolutionWarning: regionResponse?.resolution_warning ?? null,
         lowCoverageYears: regionResponse?.low_coverage_years ?? [],

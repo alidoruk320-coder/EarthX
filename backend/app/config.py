@@ -60,7 +60,8 @@ VARIABLES = {
         "vis_min": 0, "vis_max": 1, "unit": "NDVI index",
         "scale_meters": 250,
         "quality_band": "SummaryQA",
-        "start_year": 2000, "latest_complete_year": CURRENT_COMPLETE_YEAR,
+        "start_year": 2000, "first_full_year": 2001,
+        "latest_complete_year": CURRENT_COMPLETE_YEAR,
         "large_region": {
             "area_threshold_m2": 100_000_000_000,
             "collection": "MODIS/061/MOD13A3",
@@ -99,6 +100,7 @@ VARIABLES = {
         "vis_min": 0, "vis_max": 1.5, "unit": "mm/hr (annual mean rate)",
         "scale_meters": 11132,
         "start_year": 2000,
+        "first_full_year": 2001,
         "latest_complete_year": 2024,
         "documentation_url": "https://developers.google.com/earth-engine/datasets/catalog/NASA_GPM_L3_IMERG_MONTHLY_V07",
         "aggregation": "mean",
@@ -248,6 +250,9 @@ region_config = {
         "offset": VARIABLES[variable_id].get("offset", 0),
         "unit": VARIABLES[variable_id]["unit"],
         "start_year": VARIABLES[variable_id]["start_year"],
+        "first_full_year": VARIABLES[variable_id].get(
+            "first_full_year", VARIABLES[variable_id]["start_year"]
+        ),
         "latest_complete_year": VARIABLES[variable_id]["latest_complete_year"],
         "documentation_url": VARIABLES[variable_id].get("documentation_url"),
         "temporal_resolution": VARIABLES[variable_id].get("temporal_resolution"),

@@ -16,15 +16,69 @@ CACHE_TTL_SECONDS = 900
 CACHE_MAX_ENTRIES = 64
 LOW_COVERAGE_PIXEL_THRESHOLD = 3
 MAX_YEARS_PER_REGION_BATCH = 5
+MEMORY_LIMITED_REGION_VARIABLES = frozenset({
+    "soil_moisture",
+    "merra2_t2m",
+    "merra2_precipitable_water",
+    "merra2_evaporation",
+})
 TARGET_REGION_PIXELS = 1_000_000
 MAX_GEOMETRY_SIMPLIFY_METERS = 1000
 _cache = OrderedDict()
 _cache_lock = threading.Lock()
 
 
-def _normalize_geometry(payload: dict) -> dict:
+def polygonal_geometry(payload: dict) -> dict:
+    """Extract polygon members from a GeoJSON geometry/feature collection."""
     if payload.get("type") == "Feature":
         payload = payload.get("geometry") or {}
+    if payload.get("type") == "FeatureCollection":
+        geometries = [feature.get("geometry") for feature in payload.get("features", [])]
+        polygons = []
+
+        def collect(geometry):
+            geometry_type = (geometry or {}).get("type")
+            if geometry_type == "Polygon":
+                polygons.append(geometry.get("coordinates"))
+            elif geometry_type == "MultiPolygon":
+                polygons.extend(geometry.get("coordinates") or [])
+            elif geometry_type == "GeometryCollection":
+                for child in geometry.get("geometries", []):
+                    collect(child)
+
+        for geometry in geometries:
+            collect(geometry)
+        if not polygons:
+            raise ValueError("GeoJSON collection contains no Polygon or MultiPolygon members")
+        return {"type": "Polygon", "coordinates": polygons[0]} if len(polygons) == 1 else {
+            "type": "MultiPolygon", "coordinates": polygons,
+        }
+    if payload.get("type") == "GeometryCollection":
+        polygons = []
+
+        def collect(geometry):
+            geometry_type = geometry.get("type")
+            if geometry_type == "Polygon":
+                polygons.append(geometry.get("coordinates"))
+            elif geometry_type == "MultiPolygon":
+                polygons.extend(geometry.get("coordinates") or [])
+            elif geometry_type == "GeometryCollection":
+                for child in geometry.get("geometries", []):
+                    collect(child)
+
+        collect(payload)
+        if not polygons:
+            raise ValueError("GeoJSON GeometryCollection contains no Polygon or MultiPolygon members")
+        return {"type": "Polygon", "coordinates": polygons[0]} if len(polygons) == 1 else {
+            "type": "MultiPolygon", "coordinates": polygons,
+        }
+    if payload.get("type") not in {"Polygon", "MultiPolygon"}:
+        raise ValueError("geometry must be a GeoJSON Polygon, MultiPolygon, or polygon-containing GeometryCollection")
+    return payload
+
+
+def _normalize_geometry(payload: dict) -> dict:
+    payload = polygonal_geometry(payload)
     if payload.get("type") not in {"Polygon", "MultiPolygon"}:
         raise ValueError("geometry must be a GeoJSON Polygon or MultiPolygon")
 
@@ -172,18 +226,18 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
         annual_collection = collection.filterDate(annual_start, annual_end)
 
         if monthly_first:
-            def monthly_image(month):
+            monthly_images = []
+            for month in range(1, 13):
                 month_start = ee.Date.fromYMD(year, month, 1)
                 month_end = month_start.advance(1, "month")
                 monthly_collection = annual_collection.filterDate(month_start, month_end)
                 monthly_collection = monthly_collection.merge(
                     ee.ImageCollection.fromImages([empty_band])
                 )
-                return monthly_collection.reduce(temporal_reducer).rename(cfg["band"])
-
-            annual_collection = ee.ImageCollection.fromImages(
-                ee.List.sequence(1, 12).map(monthly_image)
-            )
+                monthly_images.append(
+                    monthly_collection.reduce(temporal_reducer).rename(cfg["band"])
+                )
+            annual_collection = ee.ImageCollection.fromImages(monthly_images)
         else:
             annual_collection = annual_collection.merge(
                 ee.ImageCollection.fromImages([empty_band])
@@ -199,7 +253,7 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
             "geometry": geometry,
             "scale": scale_used,
             "maxPixels": 1_000_000_000,
-            "tileScale": 8,
+            "tileScale": 16,
         }
         if small_polygon:
             center_value = annual.reduceRegion(
@@ -207,7 +261,7 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
                 geometry=center,
                 scale=scale_used,
                 maxPixels=1_000_000_000,
-                tileScale=8,
+                tileScale=16,
             ).get(cfg["band"])
             numerator = None
             denominator = 0
@@ -253,7 +307,10 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
         })
 
     rows = []
-    batch_size = 3 if cfg.get("variable_id") == "merra2_t2m" else MAX_YEARS_PER_REGION_BATCH
+    batch_size = (
+        1 if cfg.get("variable_id") in MEMORY_LIMITED_REGION_VARIABLES
+        else MAX_YEARS_PER_REGION_BATCH
+    )
     for batch_start in range(start_year, end_year + 1, batch_size):
         batch_end = min(end_year, batch_start + batch_size - 1)
         batch = ee.FeatureCollection(
@@ -292,7 +349,7 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
                             geometry=center,
                             scale=scale_used,
                             maxPixels=1_000_000_000,
-                            tileScale=8,
+                            tileScale=16,
                         ).get(cfg["band"]),
                     })
                 )
@@ -347,7 +404,6 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
         collection = (
             ee.ImageCollection(cfg["collection"])
             .filterBounds(sample_area)
-            .map(lambda image: image.clip(sample_area))
             .select(cfg["band"])
         )
         projection = collection.first().select(cfg["band"]).projection()
@@ -359,23 +415,20 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
 
         def annual_samples(year):
             year = ee.Number(year)
-
-            def monthly_image(month):
+            monthly_images = []
+            for month in range(1, 13):
                 month_start = ee.Date.fromYMD(year, month, 1)
                 month_collection = collection.filterDate(
                     month_start, month_start.advance(1, "month")
                 ).merge(ee.ImageCollection.fromImages([empty]))
-                return month_collection.mean().rename(cfg["band"])
-
-            annual = ee.ImageCollection.fromImages(
-                ee.List.sequence(1, 12).map(monthly_image)
-            ).mean()
+                monthly_images.append(month_collection.mean().rename(cfg["band"]))
+            annual = ee.ImageCollection.fromImages(monthly_images).mean()
             annual = annual.multiply(cfg["scale_factor"]).add(cfg["offset"])
             samples = annual.sampleRegions(
                 collection=ee_points,
                 properties=["sample_id", "area_weight"],
                 scale=cfg["scale"],
-                tileScale=8,
+                tileScale=16,
                 geometries=False,
             )
             return samples.map(lambda feature: ee.Feature(None, {
@@ -388,8 +441,8 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
         features = []
         # A short batch prevents the hourly, global MERRA collection from
         # exhausting Earth Engine's user-memory quota in one long request.
-        for batch_start in range(start_year, end_year + 1, 3):
-            batch_end = min(end_year, batch_start + 2)
+        for batch_start in range(start_year, end_year + 1):
+            batch_end = batch_start
             nested = ee.FeatureCollection(
                 ee.List.sequence(batch_start, batch_end).map(annual_samples)
             ).flatten()
@@ -595,8 +648,15 @@ def analyze_region(geometry_payload: dict, variable: str, start_year: int, end_y
     if end_year > cfg["latest_complete_year"]:
         raise ValueError(f"{variable} latest complete year is {cfg['latest_complete_year']}")
 
+    requested_start_year = start_year
+    first_full_year = int(cfg.get("first_full_year", cfg["start_year"]))
+    partial_year_excluded = list(range(
+        start_year,
+        min(end_year, first_full_year - 1) + 1,
+    )) if start_year < first_full_year else []
+    start_year = max(start_year, first_full_year)
     geojson = _normalize_geometry(geometry_payload)
-    key = _cache_key(geojson, variable, start_year, end_year)
+    key = _cache_key(geojson, variable, requested_start_year, end_year)
     cached = _cache_get(key)
     if cached is not None:
         cached["cache_hit"] = True
@@ -604,7 +664,10 @@ def analyze_region(geometry_payload: dict, variable: str, start_year: int, end_y
         return cached
 
     try:
-        features = _fetch_ee_features(geojson, cfg, start_year, end_year)
+        features = (
+            _fetch_ee_features(geojson, cfg, start_year, end_year)
+            if start_year <= end_year else []
+        )
     except Exception as error:
         raise RuntimeError(f"Earth Engine regional analysis failed: {error}") from error
 
@@ -619,6 +682,8 @@ def analyze_region(geometry_payload: dict, variable: str, start_year: int, end_y
     )
     result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
     result["cache_hit"] = False
+    result["partial_year_excluded"] = partial_year_excluded
+    result["first_full_year"] = first_full_year
     if result["status"] != "insufficient_data":
         _cache_set(key, result)
     return result
@@ -641,7 +706,6 @@ def _fetch_smap_sample_features(sample_points: list[dict], cfg: dict,
     collection = (
         ee.ImageCollection(cfg["collection"])
         .filterBounds(sample_area)
-        .map(lambda image: image.clip(sample_area))
     )
     if cfg.get("mask"):
         quality_band = cfg["mask"]["band"]
@@ -689,7 +753,7 @@ def _fetch_smap_sample_features(sample_points: list[dict], cfg: dict,
             collection=ee_points,
             properties=["sample_id", "area_weight"],
             scale=cfg["scale"],
-            tileScale=4,
+            tileScale=16,
             geometries=False,
         )
         annual_rows = sampled.map(lambda feature: ee.Feature(None, {

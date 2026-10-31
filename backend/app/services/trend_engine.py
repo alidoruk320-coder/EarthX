@@ -184,10 +184,18 @@ def analyze_point(lat: float, lon: float, variable: str,
         raise ValueError(f"{variable} verisi {cfg.get('start_year', 2000)} yılından önce mevcut değil.")
     if end_year > cfg.get("latest_complete_year", end_year):
         raise ValueError(f"{variable} için son tam yıllık veri {cfg.get('latest_complete_year')}.")
+    first_full_year = int(cfg.get("first_full_year", cfg.get("start_year", 2000)))
+    partial_year_excluded = list(range(
+        start_year,
+        min(end_year, first_full_year - 1) + 1,
+    )) if start_year < first_full_year else []
+    start_year = max(start_year, first_full_year)
     point = ee.Geometry.Point([lon, lat])
 
     try:
-        if variable == "merra2_t2m":
+        if start_year > end_year:
+            annual_features = []
+        elif variable == "merra2_t2m":
             annual_features = _fetch_merra2_t2m_point_features(
                 point, cfg, start_year, end_year
             )
@@ -236,7 +244,11 @@ def analyze_point(lat: float, lon: float, variable: str,
         if math.isfinite(value):
             series.append((year, value))
 
-    trend_result = analyze_annual_series(series)
+    trend_result = analyze_annual_series(
+        series,
+        expected_start_year=start_year,
+        expected_end_year=end_year,
+    )
     if trend_result["trend"] == "insufficient_data":
         return {
             "status": "insufficient_data",
@@ -247,7 +259,9 @@ def analyze_point(lat: float, lon: float, variable: str,
             "temporal_resolution": cfg.get("temporal_resolution"),
             "data_source_note": cfg.get("source"),
             "unit": cfg["unit"],
-            "period": f"{start_year}-{end_year}",
+            "period": f"{start_year}-{end_year}" if start_year <= end_year else None,
+            "first_full_year": first_full_year,
+            "partial_year_excluded": partial_year_excluded,
             **trend_result,
             "raw_series": [
                 {"date": f"{year}-01-01", "year": year, "value": value}
@@ -270,6 +284,8 @@ def analyze_point(lat: float, lon: float, variable: str,
         "temporal_resolution": cfg.get("temporal_resolution"),
         "data_source_note": cfg.get("source"),
         "unit": cfg["unit"],
+        "first_full_year": first_full_year,
+        "partial_year_excluded": partial_year_excluded,
         **trend_result,
         "raw_series": [
             {"date": f"{year}-01-01", "year": year, "value": value}

@@ -12,6 +12,7 @@ from app.services.region_analysis import (
     analyze_region,
     analyze_sampled_merra2_t2m,
     analyze_sampled_soil_moisture,
+    polygonal_geometry,
 )
 
 router = APIRouter()
@@ -31,33 +32,46 @@ def region_boundary_endpoint(
         raise HTTPException(status_code=503, detail="Google Earth Engine is not configured")
     try:
         point = ee.Geometry.Point([lon, lat])
-        levels = [0] if level == 0 else [level, 1, 2]
-        levels = list(dict.fromkeys(levels))
+        levels = [0] if level == 0 else list(dict.fromkeys([level, 1, 2]))
         selected = None
         selected_level = None
+        candidates = []
         for candidate_level in levels:
-            collection = ee.FeatureCollection(f"FAO/GAUL/2015/level{candidate_level}")
-            if candidate_level == 0:
-                # GAUL uses formal country names; coordinates disambiguate
-                # similarly named search results if exact name lookup misses.
-                named = collection.filter(ee.Filter.stringContains(
-                    "ADM0_NAME", name.split(",")[0]
-                ))
-                feature = ee.Feature(named.first()).getInfo() if named.size().getInfo() else None
-                if not feature:
-                    feature = ee.Feature(collection.filterBounds(point).first()).getInfo()
-            else:
-                country_matches = collection.filterBounds(point)
-                # A point can land on an administrative boundary. Keep the
-                # GAUL feature selected by the point; name is only a hint.
-                feature = ee.Feature(country_matches.first()).getInfo() if country_matches.size().getInfo() else None
-            if feature and feature.get("geometry"):
-                selected, selected_level = feature, candidate_level
-                break
+            if candidate_level in (1, 2):
+                candidates.append((f"FAO/GAUL/2025/level{candidate_level}", candidate_level, "GAUL0_NAME", "GAUL1_NAME", "GAUL2_NAME"))
+                candidates.append((f"FAO/GAUL_SIMPLIFIED_500m/2025/level{candidate_level}", candidate_level, "GAUL0_NAME", "GAUL1_NAME", "GAUL2_NAME"))
+            candidates.extend([
+                (f"FAO/GAUL/2015/level{candidate_level}", candidate_level, "ADM0_NAME", "ADM1_NAME", "ADM2_NAME"),
+            ])
+        selected_source = None
+        errors = []
+        for collection_id, candidate_level, country_property, level1_property, level2_property in candidates:
+            try:
+                collection = ee.FeatureCollection(collection_id)
+                if candidate_level == 0:
+                    named = collection.filter(ee.Filter.stringContains(
+                        country_property, name.split(",")[0]
+                    ))
+                    feature = ee.Feature(named.first()).getInfo() if named.size().getInfo() else None
+                    if not feature:
+                        feature = ee.Feature(collection.filterBounds(point).first()).getInfo()
+                else:
+                    matches = collection.filterBounds(point)
+                    feature = ee.Feature(matches.first()).getInfo() if matches.size().getInfo() else None
+                if feature and feature.get("geometry"):
+                    selected, selected_level = feature, candidate_level
+                    selected_source = collection_id
+                    break
+            except Exception as error:
+                errors.append(f"{collection_id}: {error}")
         if not selected:
-            raise ValueError("No GAUL administrative polygon contains the search point")
+            reason = "; ".join(errors[-4:])
+            raise ValueError(
+                "No GAUL administrative polygon contains the search point"
+                + (f"; attempted current GAUL and compatibility sources: {reason}" if reason else "")
+            )
 
-        geometry = selected["geometry"]
+        geometry = polygonal_geometry(selected["geometry"])
         coordinates = geometry.get("coordinates", [])
         flat = []
         def walk(value):
@@ -77,10 +91,12 @@ def region_boundary_endpoint(
         return {
             "geometry": geometry,
             "boundingbox": [str(value) for value in bounds],
-            "source": f"FAO GAUL 2015 level {selected_level} (Google Earth Engine)",
+            "source": f"{selected_source} (Google Earth Engine)",
             "region_type": "country" if selected_level == 0 else "administrative area",
-            "region_name": props.get("ADM0_NAME") if selected_level == 0 else (
-                props.get("ADM2_NAME") or props.get("ADM1_NAME") or props.get("ADM0_NAME")
+            "region_name": props.get("GAUL0_NAME") or props.get("ADM0_NAME") if selected_level == 0 else (
+                props.get("GAUL2_NAME") or props.get("ADM2_NAME")
+                or props.get("GAUL1_NAME") or props.get("ADM1_NAME")
+                or props.get("GAUL0_NAME") or props.get("ADM0_NAME")
             ),
             "country_code_hint": country_code or None,
         }

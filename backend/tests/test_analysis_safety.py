@@ -36,11 +36,11 @@ class AnalysisSafetyTests(unittest.TestCase):
         collection.select.return_value = collection
         collection.merge.return_value = collection
         fake_ee.FeatureCollection.return_value.getInfo.return_value = {
-            "features": [{"properties": {"year": 2000, "value": 0.4}}],
+            "features": [{"properties": {"year": 2001, "value": 0.4}}],
         }
 
         with patch.object(trend_engine, "ee", fake_ee):
-            point_before = trend_engine.analyze_point(39, 32, "ndvi", 2000, 2000)
+            point_before = trend_engine.analyze_point(39, 32, "ndvi", 2000, 2001)
 
             def use_large_region_product(_geometry, cfg, _start_year, _end_year):
                 cfg.update({
@@ -53,7 +53,7 @@ class AnalysisSafetyTests(unittest.TestCase):
                 })
                 return [{
                     "properties": {
-                        "year": 2000,
+                        "year": 2001,
                         "numerator": 0.4,
                         "denominator": 1,
                         "valid_pixel_count": 1,
@@ -64,9 +64,9 @@ class AnalysisSafetyTests(unittest.TestCase):
             with patch.object(
                 region_analysis, "_fetch_ee_features", side_effect=use_large_region_product
             ):
-                polygon_result = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2000)
+                polygon_result = region_analysis.analyze_region(POLYGON, "ndvi", 2000, 2001)
 
-            point_after = trend_engine.analyze_point(39, 32, "ndvi", 2000, 2000)
+            point_after = trend_engine.analyze_point(39, 32, "ndvi", 2000, 2001)
 
         self.assertEqual(polygon_result["source_used"], "MODIS/061/MOD13A3")
         self.assertEqual(point_after, point_before)

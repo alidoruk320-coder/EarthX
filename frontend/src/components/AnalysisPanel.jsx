@@ -491,6 +491,12 @@ export default function AnalysisPanel({
           ? "Analiz bounding box içindeki örnek noktalara dayanır; ülke/il alan ortalaması değildir."
           : "Analysis uses sample points inside the search bounding box; it is not a country or administrative-area mean."}</p>
       </div>}
+      {data.partialYearExcluded?.length > 0 && <div className="dataQualityAlert" role="note">
+        <strong>{isTurkish ? "İLK KISMİ YIL TREND DIŞINDA" : "PARTIAL FIRST YEAR EXCLUDED"}</strong>
+        <p>{isTurkish
+          ? `${data.partialYearExcluded.join(", ")} yılı ürün kaydının yıl içinde başlaması nedeniyle trend hesabına alınmadı${data.firstFullYear ? `; ilk tam yıl ${data.firstFullYear}` : ""}.`
+          : `${data.partialYearExcluded.join(", ")} was excluded from the trend because the product record begins partway through that year${data.firstFullYear ? `; first full year: ${data.firstFullYear}` : ""}.`}</p>
+      </div>}
 
       {variableDefinition && <small className="coverageNote variableDefinition">{variableDefinition}</small>}
 
