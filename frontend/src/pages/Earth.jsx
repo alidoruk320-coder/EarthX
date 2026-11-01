@@ -7,7 +7,7 @@ import { getNasaPowerSeries, NASA_POWER_SERIES } from "../nasa/power";
 import { analyzePointGEE, analyzeRegionGEE, analyzeSampledRegionGEE, analyzeSampledSoilMoistureRegion, analyzeSeaLevel, analyzeSeries, getCascadeCorrelation, getChangeTileUrl, getImpactExposure, getSeaLevelAvailability, GEE_BACKED_LABELS, NASA_POWER_LABELS, LABEL_TO_ID } from "../services/geeApi";
 import { fetchGibsCatalog, GIBS_GALLERY_KEYS, GIBS_LAYERS, registerGibsLayer } from "../nasa/earthdata";
 import { getBiodiversityContext } from "../services/biodiversity";
-import { ANALYSIS_VARIABLES, ANALYSIS_VARIABLE_LABELS, getAnalysisPeriod } from "../data/analysisVariables";
+import { ANALYSIS_VARIABLES, ANALYSIS_VARIABLE_LABELS, getAnalysisPeriod, normalizeAnalysisRange } from "../data/analysisVariables";
 import { isMarinePlace } from "../api/geocoder";
 
 const VARIABLES = ANALYSIS_VARIABLE_LABELS;
@@ -170,6 +170,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
   const [mode, setMode] = useState("trend");
   const [selectedVariable, setSelectedVariable] =
     useState("NDVI / Vegetation");
+  const [analysisRange, setAnalysisRange] = useState(() => getAnalysisPeriod("NDVI / Vegetation"));
+  const [polygonAggregationMode, setPolygonAggregationMode] = useState("annual");
   const selectedVariableRef = useRef("NDVI / Vegetation");
   const [regionAnalysisMode, setRegionAnalysisMode] = useState("sampled_boundary_filtered");
 
@@ -509,6 +511,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     requestedRegionMode = regionAnalysisMode,
     preserveCurrent = false,
     fallbackAnalysis = null,
+    rangeOverride = null,
+    aggregationModeOverride = null,
   ) {
     const requestId = ++analysisRequestRef.current;
     setAnalysisStage(requestedRegionMode === "polygon_area_weighted" ? "polygon" : place?.geojson ? "quick" : "point");
@@ -522,8 +526,11 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       );
       return;
     }
-    const completeDataEndYear = Math.min(Number(selectedYear), latestCompleteYearForAnalysis(variable));
-    const [dataStartYear] = getAnalysisPeriod(variable);
+    const defaultRange = getAnalysisPeriod(variable);
+    const [dataStartYear, requestedDataEndYear] = rangeOverride || (variable === selectedVariable
+      ? analysisRange
+      : defaultRange);
+    const completeDataEndYear = Math.min(Number(requestedDataEndYear), latestCompleteYearForAnalysis(variable));
     setAnalysisLoading(true);
     if (!preserveCurrent) setAnalysis(null);
     try {
@@ -647,7 +654,10 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
           }
         }
         try {
-          regionResponse = await analyzeRegionGEE(place.geojson, variable, dataStartYear, completeDataEndYear);
+          regionResponse = await analyzeRegionGEE(place.geojson, variable, dataStartYear, completeDataEndYear, {
+            aggregationMode: aggregationModeOverride || polygonAggregationMode,
+            batchYears: 1,
+          });
         } catch (polygonError) {
           if (fallbackAnalysis) {
             series = fallbackAnalysis.series;
@@ -797,7 +807,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
           : null;
         stats = calculated ? mapAnalysisStats(calculated) : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
       } else if (variable === "Sea Level") {
-        const [seaLevelStartYear] = getAnalysisPeriod(variable);
+        const seaLevelStartYear = dataStartYear;
         if (regionMode) {
           const seaLevelPoints = regionSamplePoints.slice(0, 16);
           const sampled = await Promise.allSettled(seaLevelPoints.map((point) =>
@@ -896,6 +906,9 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         missingYearWarning: regionResponse?.missing_year_warning ?? null,
         shortSeriesWarning: regionResponse?.short_series_warning ?? null,
         aggregationLabel: regionResponse?.aggregation_label ?? null,
+        missingMonths: regionResponse?.missing_months ?? [],
+        aggregationMode: regionResponse?.aggregation_mode ?? "annual",
+        serverBatchYears: regionResponse?.server_batch_years ?? null,
         elapsedSeconds: regionResponse?.elapsed_seconds ?? null,
         regionMethodNote: regionResponse?.method === "sampled_boundary_filtered" && polygonMode
           ? (isTurkish
@@ -943,8 +956,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
             : `${variable} data begins in ${dataStartYear}; no time series is available for the selected year.`)
           : null,
         displayYearNote: isTurkish
-          ? `Zaman kaydırıcısındaki ${selectedYear} yılı harita görüntüsünü seçer. İstatistikler ${observedPeriodNote} yıllık veri döneminin tamamını kullanır; görüntü yılını değiştirmek Z, p-değeri veya eğimi değiştirmez.`
-          : `Timeline year ${selectedYear} selects the map imagery. Statistics use the full available annual period (${observedPeriodNote}); changing the imagery year does not change Z, p-value, or slope.`,
+          ? `Harita zaman kaydırıcısı ${selectedYear} görüntüsünü seçer; istatistik aralığı ${dataStartYear}–${completeDataEndYear} olarak ayrıca seçilir. Görüntü yılını değiştirmek trend testini değiştirmez.`
+          : `The map timeline selects imagery for ${selectedYear}; the statistical interval is selected separately (${dataStartYear}–${completeDataEndYear}). Changing map imagery does not change the trend test.`,
       };
       setAnalysis(analysisResult);
       return analysisResult;
@@ -995,22 +1008,14 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     setLayerRangeNotice("");
     updateWorld(nextYear);
 
-    if (selectedPlace) {
-      runAnalysis(
-        selectedPlace.display_name,
-        selectedVariable,
-        nextYear,
-        selectedPlace.lat,
-        selectedPlace.lon,
-        selectedPlace
-      );
-    }
   }
 
   function handleVariableChange(event) {
     const variable = event.target.value;
     selectedVariableRef.current = variable;
     setSelectedVariable(variable);
+    setAnalysisRange(getAnalysisPeriod(variable));
+    setPolygonAggregationMode("annual");
 
     if (selectedPlace) {
       if (variable === "Sea Level" && selectedPlace.isMarine !== true) {
@@ -1229,6 +1234,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     setDiscoveriesOpen(false);
     selectedVariableRef.current = discovery.variable;
     setSelectedVariable(discovery.variable);
+    setAnalysisRange(getAnalysisPeriod(discovery.variable));
     setSelectedPlace(place);
     setSeaLevelAvailability({ key: coordinateKey(place.lat, place.lon), status: "loading" });
     loadBiodiversityContext(discovery.lat, discovery.lon);
@@ -1534,6 +1540,26 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         analysisVariable={selectedVariable}
         biodiversityContext={biodiversityContext}
         regionAnalysisMode={regionAnalysisMode}
+        analysisRange={analysisRange}
+        analysisRangeBounds={getAnalysisPeriod(selectedVariable)}
+        polygonAggregationMode={polygonAggregationMode}
+        onPolygonAggregationModeChange={(nextMode) => {
+          setPolygonAggregationMode(nextMode);
+          if (selectedPlace && regionAnalysisMode === "polygon_area_weighted") runAnalysis(
+            selectedPlace.display_name, selectedVariable, year,
+            Number(selectedPlace.lat), Number(selectedPlace.lon), selectedPlace,
+            regionAnalysisMode, false, null, analysisRange, nextMode,
+          );
+        }}
+        onAnalysisRangeChange={(nextRange) => {
+          const normalizedRange = normalizeAnalysisRange(selectedVariable, nextRange);
+          setAnalysisRange(normalizedRange);
+          if (selectedPlace) runAnalysis(
+            selectedPlace.display_name, selectedVariable, year,
+            Number(selectedPlace.lat), Number(selectedPlace.lon), selectedPlace,
+            regionAnalysisMode, false, null, normalizedRange,
+          );
+        }}
         onRegionAnalysisModeChange={(nextMode) => {
           setRegionAnalysisMode(nextMode);
           if (selectedPlace) runAnalysis(

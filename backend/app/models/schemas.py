@@ -26,6 +26,8 @@ class RegionAnalysisRequest(BaseModel):
     sampling_method: str | None = None
     sample_points: list[dict] = Field(default_factory=list, max_length=16)
     series_only: bool = False
+    aggregation_mode: str = Field(default="annual", pattern="^(annual|monthly_server_batch)$")
+    batch_years: int = Field(default=1, ge=1, le=26)
 
 
 class CascadeRequest(BaseModel):

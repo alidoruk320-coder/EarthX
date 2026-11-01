@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +84,28 @@ def _hour_filter(hours):
     return filters[0] if len(filters) == 1 else ee.Filter.Or(*filters)
 
 
+def select_available_timestamps(timestamps, targets):
+    """Pick nearest real UTC images for each target slot, once per day."""
+    by_day = {}
+    for timestamp in timestamps:
+        stamp = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
+        by_day.setdefault(stamp.date(), []).append((stamp, int(timestamp)))
+    selected = []
+    for day_images in by_day.values():
+        remaining = list(day_images)
+        for target in targets:
+            if not remaining:
+                break
+            def distance(item):
+                hour = item[0].hour + item[0].minute / 60
+                delta = abs(hour - target)
+                return min(delta, 24 - delta)
+            chosen = min(remaining, key=distance)
+            selected.append(chosen[1])
+            remaining.remove(chosen)
+    return selected
+
+
 def variant_collection(variable, year, month, variant):
     cfg = region_config[variable]
     start = ee.Date.fromYMD(year, month, 1)
@@ -96,10 +119,17 @@ def variant_collection(variable, year, month, variant):
 
     if variant == "merra_4_per_day":
         collection = collection.filter(_hour_filter([0, 6, 12, 18]))
-    elif variant == "smap_2_per_day":
-        collection = collection.filter(_hour_filter([0, 12]))
-    elif variant == "smap_1_per_day":
-        collection = collection.filter(_hour_filter([0]))
+    elif variant in {"smap_2_per_day", "smap_1_per_day"}:
+        # SPL4SMGP timestamps are not guaranteed to land on the requested
+        # wall-clock hour bins. Choose from timestamps that really exist.
+        timestamps = collection.aggregate_array("system:time_start").getInfo() or []
+        if not timestamps:
+            raise ValueError(f"No SMAP images exist for {year}-{month:02d}")
+        targets = (0, 12) if variant == "smap_2_per_day" else (0,)
+        selected = select_available_timestamps(timestamps, targets)
+        if not selected:
+            raise ValueError(f"No SMAP timestamps matched {variant} for {year}-{month:02d}")
+        collection = collection.filter(ee.Filter.inList("system:time_start", selected))
     elif variant != "full":
         raise ValueError(f"Unknown sampling variant: {variant}")
     return collection
@@ -107,6 +137,7 @@ def variant_collection(variable, year, month, variant):
 
 def measure_variant(variable, geometry, year, month, variant):
     cfg = region_config[variable]
+    started = time.perf_counter()
     collection = variant_collection(variable, year, month, variant)
     image = collection.mean().multiply(cfg["scale_factor"]).add(cfg.get("offset", 0))
     stats = image.reduceRegion(
@@ -117,7 +148,6 @@ def measure_variant(variable, geometry, year, month, variant):
         tileScale=16,
     )
     query = ee.Dictionary(stats).set("image_count", collection.size())
-    started = time.perf_counter()
     result = query.getInfo()
     elapsed = time.perf_counter() - started
     return {

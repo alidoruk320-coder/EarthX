@@ -1865,3 +1865,6 @@ h1 { margin: 0 0 18px; font-size: clamp(42px, 5vw, 66px); line-height: .98; lett
 }
 
 .regionAnalysisMode small { color: #d8ac6d; line-height: 1.4; }
+.analysisYearInputs { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; }
+.analysisYearInputs select { min-width: 0; width: 100%; }
+.analysisYearInputs span { color: #8eb4c2; text-align: center; }

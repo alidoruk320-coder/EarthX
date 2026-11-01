@@ -32,7 +32,7 @@ export const ANALYSIS_VARIABLES = {
     datasetId: "MODIS/061/MOD13Q1",
     unit: "NDVI index",
     temporalResolution: "16-day; annual mean",
-    startYear: 2002,
+    startYear: 2000,
     endYear: LAST_COMPLETE_YEAR,
     sourceUrl: "https://developers.google.com/earth-engine/datasets/catalog/MODIS_061_MOD13Q1",
     description: {
@@ -177,4 +177,13 @@ export const ANALYSIS_VARIABLE_LABELS = Object.keys(ANALYSIS_VARIABLES);
 export function getAnalysisPeriod(variable) {
   const definition = ANALYSIS_VARIABLES[variable];
   return definition ? [definition.startYear, definition.endYear] : [2002, LAST_COMPLETE_YEAR];
+}
+
+export function normalizeAnalysisRange(variable, range) {
+  const [minimum, maximum] = getAnalysisPeriod(variable);
+  const proposedStart = Number(range?.[0]);
+  const proposedEnd = Number(range?.[1]);
+  const start = Number.isFinite(proposedStart) ? Math.max(minimum, Math.min(maximum, Math.trunc(proposedStart))) : minimum;
+  const end = Number.isFinite(proposedEnd) ? Math.max(start, Math.min(maximum, Math.trunc(proposedEnd))) : maximum;
+  return [start, end];
 }

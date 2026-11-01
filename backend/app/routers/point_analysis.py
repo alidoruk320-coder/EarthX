@@ -177,7 +177,11 @@ def analyze_region_endpoint(req: RegionAnalysisRequest):
             raise ValueError(
                 "Sampled-region endpoint mode is currently enabled only for SMAP soil moisture and MERRA-2 air temperature"
             )
-        result = analyze_region(req.geometry, variable, req.start_year, req.end_year)
+        result = analyze_region(
+            req.geometry, variable, req.start_year, req.end_year,
+            aggregation_mode=req.aggregation_mode,
+            batch_years=req.batch_years,
+        )
         if req.series_only:
             return {
                 "status": result.get("status"),
@@ -186,6 +190,9 @@ def analyze_region_endpoint(req: RegionAnalysisRequest):
                 "raw_series": result.get("raw_series", []),
                 "missing_years": result.get("missing_years", []),
                 "partial_year_excluded": result.get("partial_year_excluded", []),
+                "missing_months": result.get("missing_months", []),
+                "aggregation_mode": result.get("aggregation_mode", "annual"),
+                "server_batch_years": result.get("server_batch_years"),
                 "elapsed_seconds": result.get("elapsed_seconds"),
             }
         return result

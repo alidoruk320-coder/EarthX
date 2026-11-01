@@ -91,6 +91,11 @@ export default function AnalysisPanel({
   onRegionAnalysisModeChange,
   regionModeAvailable = false,
   canUsePolygonMode = false,
+  analysisRange,
+  analysisRangeBounds,
+  onAnalysisRangeChange,
+  polygonAggregationMode = "annual",
+  onPolygonAggregationModeChange,
 }) {
   const isTurkish = language === "tr";
   if (!data) {
@@ -452,6 +457,35 @@ export default function AnalysisPanel({
           ? "Poligon analizi GeoJSON sınırı ve GEE değişkeni gerektirir. NASA POWER ve deniz seviyesi hızlı örneklemeyi kullanır."
           : "Polygon analysis requires a GeoJSON boundary and a GEE variable. NASA POWER and sea level use fast sampling."}</small>}
       </div>}
+      {analysisRange && analysisRangeBounds && <div className="regionAnalysisMode statisticalYearRange">
+        <label>{isTurkish ? "İSTATİSTİK ARALIĞI (TAMAMLANMIŞ YILLAR)" : "STATISTICAL RANGE (COMPLETED YEARS)"}</label>
+        <div className="analysisYearInputs">
+          <select aria-label={isTurkish ? "Başlangıç yılı" : "Start year"} value={analysisRange[0]} onChange={(event) => {
+            const nextStart = Number(event.target.value);
+            onAnalysisRangeChange?.([nextStart, Math.max(nextStart, Number(analysisRange[1]))]);
+          }}>
+            {Array.from({ length: analysisRangeBounds[1] - analysisRangeBounds[0] + 1 }, (_, index) => analysisRangeBounds[0] + index).map((yearValue) => <option key={yearValue} value={yearValue}>{yearValue}</option>)}
+          </select>
+          <span>→</span>
+          <select aria-label={isTurkish ? "Bitiş yılı" : "End year"} value={analysisRange[1]} onChange={(event) => {
+            const nextEnd = Number(event.target.value);
+            onAnalysisRangeChange?.([Math.min(Number(analysisRange[0]), nextEnd), nextEnd]);
+          }}>
+            {Array.from({ length: analysisRangeBounds[1] - analysisRangeBounds[0] + 1 }, (_, index) => analysisRangeBounds[0] + index).map((yearValue) => <option key={yearValue} value={yearValue}>{yearValue}</option>)}
+          </select>
+        </div>
+        <small>{isTurkish ? "Harita zaman kaydırıcısı yalnızca görüntü yılını değiştirir." : "The map timeline changes imagery year only."}</small>
+      </div>}
+      {regionAnalysisMode === "polygon_area_weighted" && canUsePolygonMode
+        && ["Soil Moisture", "MERRA-2 Air Temperature", "MERRA-2 Precipitable Water", "MERRA-2 Evaporation Rate"].includes(variable)
+        && <div className="regionAnalysisMode">
+          <label htmlFor="polygonAggregationMode">{isTurkish ? "POLİGON ZAMANSAL TOPLAMA" : "POLYGON TEMPORAL AGGREGATION"}</label>
+          <select id="polygonAggregationMode" value={polygonAggregationMode} onChange={(event) => onPolygonAggregationModeChange?.(event.target.value)}>
+            <option value="annual">{isTurkish ? "Mevcut yıllık yol" : "Existing annual path"}</option>
+            <option value="monthly_server_batch">{isTurkish ? "Sunucu tarafında aylık toplu yol (deneysel)" : "Server-side monthly batch (experimental)"}</option>
+          </select>
+          <small>{isTurkish ? "Deneysel yolun bellek ve süre davranışı bölge/batch boyutuna bağlıdır." : "The experimental path's memory and runtime depend on region and batch size."}</small>
+        </div>}
 
       <div className="pdfActions">
         <button className="briefingButton" disabled={!canExportReport} title={!canExportReport ? (isTurkish ? "PDF için kaynak, koordinat, istatistik ve en az 8 kesintisiz yıllık gözlem gerekir." : "PDF requires a source, coordinates, statistics, and at least 8 consecutive annual observations.") : undefined} onClick={exportBriefing}>▣ {isTurkish ? "TAM BİLİMSEL BRİFİNG PDF" : "FULL SCIENTIFIC BRIEFING PDF"}</button>
@@ -511,6 +545,15 @@ export default function AnalysisPanel({
       {data.aggregationLabel && <small className="coverageNote">
         {isTurkish ? `Yıllık işlem: ${data.aggregationLabel}${data.elapsedSeconds != null ? ` · Hesaplama: ${data.elapsedSeconds} sn` : ""}` : `Annual aggregation: ${data.aggregationLabel}${data.elapsedSeconds != null ? ` · Calculation: ${data.elapsedSeconds} s` : ""}`}
       </small>}
+      {data.aggregationMode === "monthly_server_batch" && <small className="coverageNote" role="note">
+        {isTurkish
+          ? `Aylık sunucu tarafı yol · ${data.serverBatchYears || 1} yıllık blok · Bu yöntem canlı olarak GEE'de ölçülmeden performans garantisi taşımaz.`
+          : `Server-side monthly path · ${data.serverBatchYears || 1}-year blocks · Runtime is not guaranteed until measured against live GEE.`}
+      </small>}
+      {data.missingMonths?.length > 0 && <div className="dataQualityAlert" role="status">
+        <strong>{isTurkish ? "EKSİK AYLIK GÖZLEMLER" : "MISSING MONTHLY OBSERVATIONS"}</strong>
+        <p>{data.missingMonths.join(", ")}</p>
+      </div>}
       {data.scaleUsed != null && <small className="coverageNote">
         {isTurkish ? `Ölçek: ${Number(data.scaleUsed).toLocaleString("tr-TR")} m` : `Scale: ${Number(data.scaleUsed).toLocaleString("en-US")} m`}
       </small>}

@@ -98,6 +98,8 @@ export function analyzeRegionGEE(geometry, variableLabel, startYear, endYear, op
       start_year: startYear,
       end_year: endYear,
       series_only: Boolean(options.seriesOnly),
+      aggregation_mode: options.aggregationMode || "annual",
+      batch_years: options.batchYears || 1,
     }),
   });
 }

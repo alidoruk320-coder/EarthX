@@ -1,9 +1,17 @@
 import copy
 import unittest
+from datetime import datetime, timezone
+import importlib.util
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app.config import VARIABLES, region_config
 from app.services import region_analysis
+
+SUBSAMPLE_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "diagnose_subsample.py"
+_spec = importlib.util.spec_from_file_location("diagnose_subsample", SUBSAMPLE_SCRIPT)
+diagnose_subsample = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(diagnose_subsample)
 
 
 POLYGON = {
@@ -69,6 +77,76 @@ class RegionAnalysisTests(unittest.TestCase):
             result = region_analysis.analyze_region(collection, "ndvi", 2000, 2001)
         self.assertEqual(fetch.call_args.args[0], POLYGON)
         self.assertEqual(result["raw_series"][0]["year"], 2001)
+
+    def test_monthly_server_batch_annualizes_complete_months(self):
+        months = [{"properties": {
+            "year": 2020, "month": month, "numerator": month * 2,
+            "denominator": 2, "valid_pixel_count": 9,
+        }} for month in range(1, 13)]
+        annual, missing = region_analysis._annualize_month_features(
+            months, region_analysis.region_config["merra2_t2m"], 2020, 2020,
+        )
+        self.assertEqual(missing, [])
+        self.assertEqual(annual[0]["properties"]["numerator"], 6.5)
+        self.assertEqual(annual[0]["properties"]["valid_pixel_count"], 9)
+
+    def test_monthly_server_batch_missing_month_excludes_annual_observation(self):
+        months = [{"properties": {
+            "year": 2020, "month": month, "numerator": 10,
+            "denominator": 1, "valid_pixel_count": 9,
+        }} for month in range(1, 13) if month != 7]
+        annual, missing = region_analysis._annualize_month_features(
+            months, region_analysis.region_config["merra2_t2m"], 2020, 2020,
+        )
+        self.assertEqual(missing, ["2020-07"])
+        self.assertIsNone(annual[0]["properties"]["numerator"])
+
+    def test_server_month_fetch_batches_with_one_feature_collection_getinfo(self):
+        fake_ee = MagicMock()
+        fake_ee.Geometry.return_value.area.return_value.getInfo.return_value = 10_000_000_000
+        fake_ee.FeatureCollection.return_value.flatten.return_value.getInfo.return_value = {"features": []}
+        with patch.object(region_analysis, "ee", fake_ee):
+            rows = region_analysis._fetch_server_month_features(
+                POLYGON, copy.deepcopy(region_config["merra2_t2m"]), 2020, 2024, 5,
+            )
+        self.assertEqual(rows, [])
+        self.assertEqual(fake_ee.FeatureCollection.return_value.flatten.return_value.getInfo.call_count, 1)
+        self.assertEqual(fake_ee.Geometry.return_value.area.return_value.getInfo.call_count, 1)
+
+    def test_monthly_server_batch_path_is_explicit_and_preserves_annual_path(self):
+        monthly_rows = [{"properties": {
+            "year": 2020, "month": month, "numerator": 7,
+            "denominator": 1, "valid_pixel_count": 12,
+        }} for month in range(1, 13)]
+        with patch.object(region_analysis, "_fetch_server_month_features", return_value=monthly_rows) as fetch:
+            result = region_analysis.analyze_region(
+                POLYGON, "merra2_t2m", 2020, 2020,
+                aggregation_mode="monthly_server_batch", batch_years=5,
+            )
+        self.assertEqual(fetch.call_args.args[2:], (2020, 2020, 5))
+        self.assertEqual(result["aggregation_mode"], "monthly_server_batch")
+        self.assertEqual(result["raw_series"][0]["value"], 7)
+        with self.assertRaisesRegex(ValueError, "supported only"):
+            region_analysis.analyze_region(POLYGON, "ndvi", 2020, 2020, aggregation_mode="monthly_server_batch")
+
+    def test_smap_subsampling_selects_existing_timestamps_per_day(self):
+        def millis(day, hour, minute=30):
+            return int(datetime(2024, 7, day, hour, minute, tzinfo=timezone.utc).timestamp() * 1000)
+        available = [millis(1, hour) for hour in (2, 5, 11, 14, 20)]
+        twice = diagnose_subsample.select_available_timestamps(available, (0, 12))
+        once = diagnose_subsample.select_available_timestamps(available, (0,))
+        self.assertEqual(twice, [millis(1, 2), millis(1, 11)])
+        self.assertEqual(once, [millis(1, 2)])
+        self.assertTrue(set(twice).issubset(set(available)))
+
+    def test_smap_subsampling_reports_empty_timestamp_query_clearly(self):
+        fake_ee = MagicMock()
+        collection = MagicMock()
+        fake_ee.ImageCollection.return_value.filterDate.return_value.select.return_value = collection
+        collection.aggregate_array.return_value.getInfo.return_value = []
+        with patch.object(diagnose_subsample, "ee", fake_ee):
+            with self.assertRaisesRegex(ValueError, "No SMAP images exist for 2024-07"):
+                diagnose_subsample.variant_collection("soil_moisture", 2024, 7, "smap_1_per_day")
 
     def test_empty_polygon_years_fall_back_to_center_cell_or_return_clear_error(self):
         empty = feature(2001, numerator=None, denominator=0, center_value=None, pixels=0)
