@@ -77,6 +77,13 @@ def fmt(value):
     return "—" if value is None else f"{value:.8g}" if isinstance(value, (int, float)) else str(value)
 
 
+def source_configuration_note(result, config):
+    """Use the runtime-selected catalog product, including region overrides."""
+    actual = result.get("source_used") or result.get("dataset_id") or config["collection"]
+    base = config["collection"]
+    return f"{actual} (selected; base {base})" if actual != base else actual
+
+
 def run_case(region_name, geometry, boundary_source, variable):
     cfg = region_config[variable]
     start_year = max(2000, cfg["start_year"])
@@ -84,7 +91,7 @@ def run_case(region_name, geometry, boundary_source, variable):
     label = cfg.get("source") or cfg["collection"]
     try:
         result = analyze_region(geometry, variable, start_year, end_year)
-        source_label = result.get("source_used") or result.get("dataset_id") or cfg.get("collection")
+        source_label = source_configuration_note(result, cfg)
         warnings = [
             key for key in (
                 "resolution_warning", "short_series_warning", "missing_year_warning",
