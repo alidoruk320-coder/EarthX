@@ -37,6 +37,13 @@ def feature_collection_geometry(collection_id, filters):
     return polygonal_geometry(feature["geometry"])
 
 
+def initialize_gee_with_deadline():
+    if not GEE_PROJECT_ID or not init_gee() or not is_gee_initialized():
+        return False
+    ee.data.setDeadline(REQUEST_TIMEOUT_MS)
+    return True
+
+
 def istanbul_boundary():
     candidates = (
         ("FAO/GAUL/2025/level1", "GAUL0_NAME", "GAUL1_NAME", "Türkiye"),
@@ -187,9 +194,8 @@ def run_variant_isolated(variable, geometry, year, month, variant):
 def worker_main(path):
     with open(path, encoding="utf-8") as stream:
         payload = json.load(stream)
-    ee.data.setDeadline(REQUEST_TIMEOUT_MS)
-    if not GEE_PROJECT_ID or not init_gee() or not is_gee_initialized():
-        raise RuntimeError("Earth Engine initialization failed")
+    if not initialize_gee_with_deadline():
+        raise RuntimeError("Earth Engine initialization failed; configure backend/.env and credentials.")
     result = measure_variant(
         payload["variable"], payload["geometry"], payload["year"],
         payload["month"], payload["variant"],
@@ -212,8 +218,7 @@ def main():
     parser.add_argument("--month", type=int, choices=range(1, 13), required=True)
     args = parser.parse_args()
 
-    ee.data.setDeadline(REQUEST_TIMEOUT_MS)
-    if not GEE_PROJECT_ID or not init_gee() or not is_gee_initialized():
+    if not initialize_gee_with_deadline():
         raise SystemExit("Earth Engine initialization failed; configure backend/.env and credentials.")
     geometry, boundary_source = istanbul_boundary()
     print(f"Region: {args.region}; boundary: {boundary_source}; variable: {args.variable}; period: {args.year}-{args.month:02d}")

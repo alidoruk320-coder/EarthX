@@ -74,6 +74,13 @@ def boundary(region):
     raise RuntimeError("Could not load Istanbul boundary: " + "; ".join(errors[-3:]))
 
 
+def initialize_gee_with_deadline():
+    if not GEE_PROJECT_ID or not init_gee() or not is_gee_initialized():
+        return False
+    ee.data.setDeadline(REQUEST_TIMEOUT_MS)
+    return True
+
+
 def iter_polygon_rings(geometry):
     kind = geometry.get("type")
     coordinates = geometry.get("coordinates") or []
@@ -182,13 +189,11 @@ def _weighted_merged_series(point_results, points):
 
 
 def run_worker(payload):
-    import ee as earth_engine
     from app.services.region_analysis import analyze_sampled_merra2_t2m, analyze_sampled_soil_moisture
     from app.services.trend_engine import analyze_annual_series, analyze_point
 
-    earth_engine.data.setDeadline(REQUEST_TIMEOUT_MS)
-    if not GEE_PROJECT_ID or not init_gee() or not is_gee_initialized():
-        raise RuntimeError("Earth Engine initialization failed")
+    if not initialize_gee_with_deadline():
+        raise RuntimeError("Earth Engine initialization failed; configure backend/.env and credentials.")
 
     variable = payload["variable"]
     start_year, end_year = payload["start_year"], payload["end_year"]
@@ -297,8 +302,7 @@ def main():
         parser.error("--timeout-seconds must be between 1 and 300")
     CASE_TIMEOUT_SECONDS = args.timeout_seconds
 
-    ee.data.setDeadline(REQUEST_TIMEOUT_MS)
-    if not GEE_PROJECT_ID or not init_gee() or not is_gee_initialized():
+    if not initialize_gee_with_deadline():
         raise SystemExit("Earth Engine initialization failed; configure backend/.env and credentials.")
     geometries = {}
     for region in REGIONS:
