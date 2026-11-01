@@ -84,6 +84,7 @@ def run_case(region_name, geometry, boundary_source, variable):
     label = cfg.get("source") or cfg["collection"]
     try:
         result = analyze_region(geometry, variable, start_year, end_year)
+        source_label = result.get("source_used") or result.get("dataset_id") or cfg.get("collection")
         warnings = [
             key for key in (
                 "resolution_warning", "short_series_warning", "missing_year_warning",
@@ -107,7 +108,7 @@ def run_case(region_name, geometry, boundary_source, variable):
                 "not enabled unless the full-resolution request still fails."
             )
             print(f"  SPEED (>60 s): {suggestion}")
-        print(f"  source configuration: {label}; boundary: {boundary_source}; interval: {start_year}-{end_year}")
+        print(f"  source configuration: {source_label}; boundary: {boundary_source}; interval: {start_year}-{end_year}")
         if variable == "gldas_surface_runoff" and result.get("raw_series"):
             observations = result["raw_series"]
             values = [float(row["value"]) for row in observations if row.get("value") is not None]

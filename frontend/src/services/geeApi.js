@@ -84,7 +84,7 @@ export function analyzePointGEE(lat, lon, variableLabel, startYear, endYear) {
   });
 }
 
-export function analyzeRegionGEE(geometry, variableLabel, startYear, endYear) {
+export function analyzeRegionGEE(geometry, variableLabel, startYear, endYear, options = {}) {
   const variable = LABEL_TO_ID[variableLabel];
   if (!variable) throw new Error(`Unsupported Earth Engine variable: ${variableLabel}`);
   return request("/analyze-region", {
@@ -92,7 +92,13 @@ export function analyzeRegionGEE(geometry, variableLabel, startYear, endYear) {
     timeoutMessage: "Alan-ağırlıklı poligon analizi 3 dakika içinde tamamlanamadı. Daha küçük bir bölge veya Hızlı tahmin modunu deneyin.",
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ geometry, variable, start_year: startYear, end_year: endYear }),
+    body: JSON.stringify({
+      geometry,
+      variable,
+      start_year: startYear,
+      end_year: endYear,
+      series_only: Boolean(options.seriesOnly),
+    }),
   });
 }
 

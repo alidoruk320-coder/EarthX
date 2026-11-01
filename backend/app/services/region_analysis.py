@@ -218,6 +218,7 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
     )
     temporal_reducer = ee.Reducer.sum() if cfg["aggregate"] == "sum" else ee.Reducer.mean()
     monthly_first = cfg.get("monthly_first", False)
+    tile_scale = 16
 
     def annual_image(year):
         year = ee.Number(year)
@@ -231,19 +232,11 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
                 month_start = ee.Date.fromYMD(year, month, 1)
                 month_end = month_start.advance(1, "month")
                 monthly_collection = annual_collection.filterDate(month_start, month_end)
-                monthly_collection = monthly_collection.merge(
-                    ee.ImageCollection.fromImages([empty_band])
-                )
-                monthly_images.append(
-                    monthly_collection.reduce(temporal_reducer).rename(cfg["band"])
-                )
-            annual_collection = ee.ImageCollection.fromImages(monthly_images)
+                monthly_images.append(monthly_collection.mean().rename(cfg["band"]))
+            annual = ee.ImageCollection.fromImages(monthly_images).mean()
         else:
-            annual_collection = annual_collection.merge(
-                ee.ImageCollection.fromImages([empty_band])
-            )
+            annual = annual_collection.select(cfg["band"]).mean()
 
-        annual = annual_collection.reduce(temporal_reducer).rename(cfg["band"])
         return annual.multiply(cfg["scale_factor"]).add(cfg.get("offset", 0))
 
     def annual_feature(year):
@@ -253,7 +246,7 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
             "geometry": geometry,
             "scale": scale_used,
             "maxPixels": 1_000_000_000,
-            "tileScale": 16,
+            "tileScale": tile_scale,
         }
         if small_polygon:
             center_value = annual.reduceRegion(
@@ -261,7 +254,7 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
                 geometry=center,
                 scale=scale_used,
                 maxPixels=1_000_000_000,
-                tileScale=16,
+                tileScale=tile_scale,
             ).get(cfg["band"])
             numerator = None
             denominator = 0
@@ -349,7 +342,7 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
                             geometry=center,
                             scale=scale_used,
                             maxPixels=1_000_000_000,
-                            tileScale=16,
+                            tileScale=tile_scale,
                         ).get(cfg["band"]),
                     })
                 )
