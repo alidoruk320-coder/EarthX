@@ -101,16 +101,19 @@ class RegionAnalysisTests(unittest.TestCase):
         self.assertEqual(missing, ["2020-07"])
         self.assertIsNone(annual[0]["properties"]["numerator"])
 
-    def test_server_month_fetch_batches_with_one_feature_collection_getinfo(self):
+    def test_one_year_server_month_batch_wraps_flattened_features_correctly(self):
         fake_ee = MagicMock()
         fake_ee.Geometry.return_value.area.return_value.getInfo.return_value = 10_000_000_000
-        fake_ee.FeatureCollection.return_value.flatten.return_value.getInfo.return_value = {"features": []}
+        fake_ee.FeatureCollection.return_value.getInfo.return_value = {"features": []}
+        fake_ee.List.return_value.flatten.return_value.flatten.return_value = "flat-features"
         with patch.object(region_analysis, "ee", fake_ee):
             rows = region_analysis._fetch_server_month_features(
-                POLYGON, copy.deepcopy(region_config["merra2_t2m"]), 2020, 2024, 5,
+                POLYGON, copy.deepcopy(region_config["merra2_t2m"]), 2020, 2020, 1,
             )
         self.assertEqual(rows, [])
-        self.assertEqual(fake_ee.FeatureCollection.return_value.flatten.return_value.getInfo.call_count, 1)
+        self.assertEqual(fake_ee.FeatureCollection.call_args.args[0], "flat-features")
+        self.assertEqual(fake_ee.FeatureCollection.return_value.getInfo.call_count, 1)
+        fake_ee.FeatureCollection.return_value.flatten.assert_not_called()
         self.assertEqual(fake_ee.Geometry.return_value.area.return_value.getInfo.call_count, 1)
 
     def test_monthly_server_batch_path_is_explicit_and_preserves_annual_path(self):
@@ -232,7 +235,6 @@ class RegionAnalysisTests(unittest.TestCase):
         self.assertTrue(VARIABLES["temperature"]["equal_area"])
         for variable in (
             "merra2_t2m",
-            "merra2_precipitable_water",
             "merra2_evaporation",
             "gldas_root_moisture",
             "gldas_surface_runoff",
@@ -323,7 +325,6 @@ class RegionAnalysisTests(unittest.TestCase):
         for variable in (
             "soil_moisture",
             "merra2_t2m",
-            "merra2_precipitable_water",
             "merra2_evaporation",
             "gldas_root_moisture",
             "gldas_surface_runoff",
@@ -331,44 +332,44 @@ class RegionAnalysisTests(unittest.TestCase):
             with self.subTest(variable=variable):
                 self.assertTrue(region_config[variable]["monthly_first"])
 
-    def test_smap_quick_mode_weights_samples_and_marks_its_method(self):
-        rows = [
-            {"properties": {"year": 2018, "value": 0.2, "area_weight": 1}},
-            {"properties": {"year": 2018, "value": 0.4, "area_weight": 3}},
-        ]
+    def test_soil_moisture_sampled_region_mode_is_explicitly_disabled(self):
         points = [
             {"lat": 41.0, "lon": 29.0, "weight": 1},
             {"lat": 41.1, "lon": 29.1, "weight": 3},
         ]
-        with patch.object(region_analysis, "_fetch_smap_sample_features", return_value=rows):
-            result = region_analysis.analyze_sampled_soil_moisture(
-                POLYGON, points, 2018, 2018
-            )
-        self.assertEqual(result["method"], "sampled_boundary_filtered")
-        self.assertAlmostEqual(result["raw_series"][0]["value"], 0.35)
-        self.assertEqual(result["sample_count"], 2)
+        with self.assertRaisesRegex(ValueError, "SMAP soil moisture sampled region mode is disabled"):
+            region_analysis.analyze_sampled_soil_moisture(POLYGON, points, 2018, 2018)
 
-    def test_smap_quick_mode_uses_all_sixteen_supplied_boundary_points(self):
+    def test_quick_sample_retry_sizes_descend_without_parallel_fanout(self):
+        self.assertEqual(region_analysis._quick_point_attempt_sizes(16), [16, 8, 4])
+        self.assertEqual(region_analysis._quick_point_attempt_sizes(12), [12, 8, 4])
+        self.assertEqual(region_analysis._quick_point_attempt_sizes(8), [8, 4])
+        self.assertEqual(region_analysis._quick_point_attempt_sizes(6), [6, 4])
+        self.assertEqual(region_analysis._quick_point_attempt_sizes(3), [3])
+
+    def test_soil_moisture_quick_path_is_rejected_before_fetching_any_samples(self):
+        points = [{"lat": 41 + index / 10, "lon": 29 + index / 10, "weight": 1} for index in range(8)]
+        with patch.object(region_analysis, "_fetch_smap_sample_features") as fetch:
+            with self.assertRaisesRegex(ValueError, "SMAP soil moisture sampled region mode is disabled"):
+                region_analysis.analyze_sampled_soil_moisture(POLYGON, points, 2018, 2019)
+        fetch.assert_not_called()
+
+    def test_soil_moisture_sampled_region_mode_reports_clear_memory_limit_reason(self):
+        points = [{"lat": 41, "lon": 29, "weight": 1}]
+        with self.assertRaisesRegex(ValueError, "Google Earth Engine exceeds the user memory limit"):
+            region_analysis.analyze_sampled_soil_moisture(POLYGON, points, 2018, 2018)
+
+    def test_soil_moisture_sampled_region_mode_uses_no_boundary_sample_fetch(self):
         points = [
             {"lat": 30 + index / 10, "lon": 20 + index / 10, "weight": 1}
             for index in range(16)
         ]
-        rows = [
-            {"properties": {
-                "year": 2018,
-                "value": 0.2 + index / 100,
-                "area_weight": 1,
-                "sample_id": index,
-            }}
-            for index in range(16)
-        ]
-        with patch.object(region_analysis, "_fetch_smap_sample_features", return_value=rows):
-            result = region_analysis.analyze_sampled_soil_moisture(
-                POLYGON, points, 2018, 2018
-            )
-        self.assertEqual(result["sample_count"], 16)
+        with patch.object(region_analysis, "_fetch_smap_sample_features") as fetch:
+            with self.assertRaisesRegex(ValueError, "sampled region mode is disabled"):
+                region_analysis.analyze_sampled_soil_moisture(POLYGON, points, 2018, 2018)
+        fetch.assert_not_called()
 
-    def test_smap_quick_mode_bounds_each_year_to_one_getinfo(self):
+    def test_smap_quick_mode_uses_one_getinfo_for_monthly_composites(self):
         fake_ee = MagicMock()
         image_collection = MagicMock()
         image_collection.filterBounds.return_value = image_collection
@@ -387,7 +388,50 @@ class RegionAnalysisTests(unittest.TestCase):
             region_analysis._fetch_smap_sample_features(
                 points, region_config["soil_moisture"], 2015, 2025
             )
-        self.assertEqual(feature_collection.getInfo.call_count, 11)
+        self.assertEqual(feature_collection.getInfo.call_count, 1)
+
+    def test_smap_quick_memory_error_retries_with_fewer_points_and_continues_years(self):
+        fake_ee = MagicMock()
+        collection = MagicMock()
+        collection.filterBounds.return_value = collection
+        collection.filterDate.return_value = collection
+        collection.map.return_value = collection
+        collection.select.return_value = collection
+        collection.size.return_value.getInfo.return_value = 100
+        collection.first.return_value.select.return_value.projection.return_value = "projection"
+        image = MagicMock()
+        image.rename.return_value = image
+        image.updateMask.return_value = image
+        image.setDefaultProjection.return_value = image
+        fake_ee.Image.constant.return_value = image
+        monthly = MagicMock()
+        monthly.reduce.return_value.rename.return_value = image
+        fake_ee.ImageCollection.fromImages.return_value.mean.return_value.multiply.return_value.add.return_value = image
+        image.sampleRegions.return_value.map.return_value = "rows"
+        feature_collection = MagicMock()
+        feature_collection.geometry.return_value.buffer.return_value = "buffer"
+        feature_collection.flatten.return_value = feature_collection
+        feature_collection.getInfo.side_effect = [
+            RuntimeError("User memory limit exceeded"),
+            {"features": []},
+            {"features": []},
+        ]
+        fake_ee.FeatureCollection.return_value = feature_collection
+        fake_ee.ImageCollection.return_value = collection
+        fake_ee.List.sequence.return_value.map.return_value = "mapped"
+        points = [{"lat": 41 + index / 10, "lon": 29 + index / 10, "weight": 1} for index in range(16)]
+
+        with patch.object(region_analysis, "ee", fake_ee):
+            features, failed, used_by_year, image_count, request_count = region_analysis._fetch_smap_sample_features(
+                points, region_config["soil_moisture"], 2018, 2019,
+            )
+
+        self.assertEqual(features, [])
+        self.assertEqual(failed, [])
+        self.assertEqual(used_by_year, {2018: 8, 2019: 8})
+        self.assertIsNone(image_count)
+        self.assertEqual(request_count, 2)
+        self.assertEqual(feature_collection.getInfo.call_count, 2)
 
 
 if __name__ == "__main__":

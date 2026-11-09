@@ -15,7 +15,7 @@ from app.services import region_analysis
 from app.services.region_analysis import analyze_region, ee, polygonal_geometry
 
 LIMIT_MS = 300_000
-VARIABLES = ("soil_moisture", "merra2_t2m", "merra2_precipitable_water", "merra2_evaporation")
+VARIABLES = ("soil_moisture", "merra2_t2m", "merra2_evaporation")
 
 
 def initialize():

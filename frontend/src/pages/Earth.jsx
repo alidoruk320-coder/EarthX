@@ -4,6 +4,7 @@ import SearchBar from "../components/SearchBar";
 import AnalysisPanel from "../components/AnalysisPanel";
 import YearSlider from "../components/YearSlider";
 import { getNasaPowerSeries, NASA_POWER_SERIES } from "../nasa/power";
+import { resolvePlaceBoundary } from "../api/geocoder";
 import { analyzePointGEE, analyzeRegionGEE, analyzeSampledRegionGEE, analyzeSampledSoilMoistureRegion, analyzeSeaLevel, analyzeSeries, getCascadeCorrelation, getChangeTileUrl, getImpactExposure, getSeaLevelAvailability, GEE_BACKED_LABELS, NASA_POWER_LABELS, LABEL_TO_ID } from "../services/geeApi";
 import { fetchGibsCatalog, GIBS_GALLERY_KEYS, GIBS_LAYERS, registerGibsLayer } from "../nasa/earthdata";
 import { getBiodiversityContext } from "../services/biodiversity";
@@ -134,7 +135,6 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     "GPM Precipitation Rate": "GPM Yağış Hızı",
     "Total Column Ozone": "Toplam Sütun Ozonu",
     "MERRA-2 Air Temperature": "MERRA-2 Hava Sıcaklığı",
-    "MERRA-2 Precipitable Water": "MERRA-2 Çökelebilir Su Buharı",
     "MERRA-2 Evaporation Rate": "MERRA-2 Buharlaşma Hızı",
     "GLDAS Root-Zone Soil Moisture": "GLDAS Kök Bölgesi Toprak Nemi",
     "GLDAS Surface Runoff": "GLDAS Yüzey Akışı",
@@ -492,13 +492,16 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       .sort((a, b) => a.year - b.year);
   }
 
-  async function analyzePointsInBatches(points, analyzePoint, batchSize = 1) {
-    const results = [];
-    for (let index = 0; index < points.length; index += batchSize) {
-      const batch = points.slice(index, index + batchSize);
-      results.push(...await Promise.all(batch.map(analyzePoint)));
+  async function analyzePointsIndependently(points, analyzePoint) {
+    const settled = [];
+    for (const point of points) {
+      try {
+        settled.push({ status: "fulfilled", value: await analyzePoint(point), point });
+      } catch (reason) {
+        settled.push({ status: "rejected", reason, point });
+      }
     }
-    return results;
+    return settled;
   }
 
   async function runAnalysis(
@@ -514,9 +517,20 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     rangeOverride = null,
     aggregationModeOverride = null,
   ) {
+    let effectivePlace = place;
+    if (requestedRegionMode === "polygon_area_weighted" && !effectivePlace?.geojson && effectivePlace?.display_name) {
+      try {
+        const resolved = await resolvePlaceBoundary(effectivePlace, effectivePlace.display_name);
+        if (resolved?.geojson) {
+          effectivePlace = resolved;
+        }
+      } catch (error) {
+        console.warn("Polygon boundary was not resolved before analysis; falling back to the current place object.", error);
+      }
+    }
     const requestId = ++analysisRequestRef.current;
-    setAnalysisStage(requestedRegionMode === "polygon_area_weighted" ? "polygon" : place?.geojson ? "quick" : "point");
-    if (variable === "Sea Level" && place?.isMarine !== true) {
+    setAnalysisStage(requestedRegionMode === "polygon_area_weighted" ? "polygon" : effectivePlace?.geojson ? "quick" : "point");
+    if (variable === "Sea Level" && effectivePlace?.isMarine !== true) {
       setAnalysisLoading(false);
       showSeaLevelUnavailable(
         place || { display_name: placeName, lat, lon },
@@ -534,23 +548,27 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     setAnalysisLoading(true);
     if (!preserveCurrent) setAnalysis(null);
     try {
-      const regionBounds = getRegionBounds(place);
-      const regionSamplePoints = place ? getRegionSamplePoints(place, 16) : [];
-      if (variable === "Sea Level" && place?.geojson && place?.isMarine && regionBounds
+      const regionBounds = getRegionBounds(effectivePlace);
+      const regionSamplePoints = effectivePlace ? getRegionSamplePoints(effectivePlace, 16) : [];
+      if (variable === "Sea Level" && effectivePlace?.geojson && effectivePlace?.isMarine && regionBounds
         && regionSamplePoints.length === 0) {
         throw new Error(isTurkish
           ? "Seçilen deniz sınırı içinde güvenilir örnek nokta üretilemedi."
           : "No reliable interior sample points could be generated inside the selected sea boundary.");
       }
-      const regionMode = Boolean(regionBounds && (
+      const unsupportedQuickRegionVariables = new Set([
+        "Soil Moisture",
+      ]);
+      const quickRegionDisabled = unsupportedQuickRegionVariables.has(variable);
+      const regionMode = Boolean(!quickRegionDisabled && regionBounds && (
         regionSamplePoints.length > 0
-        || (requestedRegionMode === "polygon_area_weighted" && place?.geojson && GEE_BACKED_LABELS.includes(variable))
+        || (requestedRegionMode === "polygon_area_weighted" && effectivePlace?.geojson && GEE_BACKED_LABELS.includes(variable))
       ));
       const polygonMode = regionMode
         && requestedRegionMode === "polygon_area_weighted"
         && GEE_BACKED_LABELS.includes(variable)
-        && Boolean(place?.geojson);
-      if (regionBounds && place?.geojson && requestedRegionMode === "sampled_boundary_filtered"
+        && Boolean(effectivePlace?.geojson);
+      if (regionBounds && effectivePlace?.geojson && requestedRegionMode === "sampled_boundary_filtered"
         && regionSamplePoints.length === 0) {
         throw new Error(isTurkish
           ? "Hızlı tahmin için sınır içinde örnek nokta üretilemedi. Poligon analizini seçin."
@@ -558,19 +576,23 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       }
       const centerLat = regionBounds ? (regionBounds.south + regionBounds.north) / 2 : Number(lat);
       const centerLon = regionBounds ? (regionBounds.west + regionBounds.east) / 2 : Number(lon);
-      const regionMethodNote = regionMode
-        ? place?.boundary_warning
-          ? (isTurkish
-            ? "Sınır poligonu bulunamadı; bu sonuç arama sağlayıcısının bounding box'ı içindeki en fazla 16 örnek noktanın yaklaşık ortalamasıdır."
-            : "No administrative polygon was found; this is an approximate mean from up to 16 points inside the search bounding box.")
-          : polygonMode
-          ? (isTurkish
-            ? "Poligon sonucu, her yılın geçerli GEE piksellerinin alanlarıyla ağırlıklandırılmış ortalamasıdır."
-            : "Polygon result is the area-weighted mean of valid GEE pixels for each year.")
-          : isTurkish
-          ? "Bölgesel sonuç, ülke/bölge sınırı içinde seçilmiş örnek noktaların ağırlıklı ortalamasıdır; bu hâlâ tam alan-ağırlıklı poligon agregasyonu değildir, yalnızca daha güvenilir bir bölge tahminidir."
-          : "The regional result is a weighted mean of boundary-filtered sample points; this is still an approximate region estimate, not a full area-weighted polygon aggregation."
-        : null;
+      const regionMethodNote = quickRegionDisabled && regionBounds
+        ? (isTurkish
+          ? "Bu değişken için bölgesel hızlı tahmin bu ortamda devre dışı bırakılmıştır; Google Earth Engine çok yıllık örnekleme isteklerinde bellek limitine düşüyor. Tek nokta analizi veya daha küçük/kısa poligon analizi kullanın."
+          : "Regional quick estimates are disabled for this variable because Google Earth Engine exceeds memory limits on multi-year sampling requests. Use a single-point analysis or a much smaller/shorter polygon request.")
+        : regionMode
+          ? effectivePlace?.boundary_warning
+            ? (isTurkish
+              ? "Sınır poligonu bulunamadı; bu sonuç arama sağlayıcısının bounding box'ı içindeki en fazla 16 örnek noktanın yaklaşık ortalamasıdır."
+              : "No administrative polygon was found; this is an approximate mean from up to 16 points inside the search bounding box.")
+            : polygonMode
+            ? (isTurkish
+              ? "Poligon sonucu, her yılın geçerli GEE piksellerinin alanlarıyla ağırlıklandırılmış ortalamasıdır."
+              : "Polygon result is the area-weighted mean of valid GEE pixels for each year.")
+            : isTurkish
+            ? "Bölgesel sonuç, ülke/bölge sınırı içinde seçilmiş örnek noktaların ağırlıklı ortalamasıdır; bu hâlâ tam alan-ağırlıklı poligon agregasyonu değildir, yalnızca daha güvenilir bir bölge tahminidir."
+            : "The regional result is a weighted mean of boundary-filtered sample points; this is still an approximate region estimate, not a full area-weighted polygon aggregation."
+          : null;
 
       let series;
       let stats;
@@ -583,7 +605,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       let partialYearExcluded = [];
       let firstFullYear = null;
       let regionResponse = null;
-      let polygonPreview = null;
+      let pointRetrievalInfo = null;
+      let pointResults = [];
 
       if (completeDataEndYear < dataStartYear) {
         series = [];
@@ -592,138 +615,24 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         unit = ANALYSIS_VARIABLES[variable]?.unit;
         stats = { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false };
       } else if (polygonMode) {
-        if (!preserveCurrent && variable === "NDVI / Vegetation" && regionSamplePoints.length > 0) {
-          try {
-            const previewPoints = regionSamplePoints.slice(0, 16);
-            const previewResults = await analyzePointsInBatches(
-              previewPoints,
-              (point) => analyzePointGEE(point.lat, point.lon, variable, dataStartYear, completeDataEndYear),
-            );
-            const previewSeriesByPoint = previewResults
-              .map((result) => (result.raw_series || []).map((point) => ({
-                year: Number(point.year || point.date?.slice(0, 4)),
-                value: Number(point.value),
-              })))
-              .filter((values) => values.length > 0);
-            const previewSeries = mergeSeriesForRegion(previewSeriesByPoint, previewPoints);
-            if (previewSeries.length > 0) {
-              const previewResult = previewResults[0];
-              const previewSource = ANALYSIS_VARIABLES[variable]?.source || "Google Earth Engine";
-              const previewDatasetId = previewResult.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
-              const previewUnit = previewResult.unit || ANALYSIS_VARIABLES[variable]?.unit;
-              const previewStartYear = Math.min(...previewSeries.map((point) => point.year));
-              const previewEndYear = Math.max(...previewSeries.map((point) => point.year));
-              const previewStatistics = previewSeries.length >= 8
-                ? await analyzeSeries(previewSeries, variable, previewUnit, previewDatasetId, previewStartYear, previewEndYear)
-                : null;
-              const previewStats = previewStatistics
-                ? mapAnalysisStats(previewStatistics)
-                : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
-              const previewMethodNote = isTurkish
-                ? `Hızlı ön tahmin: poligon içindeki ${previewPoints.length} örnek noktanın enlem ağırlıklı ortalaması; tam poligon ortalaması değildir.`
-                : `Fast preview: latitude-weighted mean of ${previewPoints.length} points inside the boundary; not a full polygon mean.`;
-              polygonPreview = {
-                name: `${placeName} (${isTurkish ? "bölgesel ortalama" : "regional average"})`,
-                variable,
-                year: selectedYear,
-                analysisEndYear: completeDataEndYear,
-                lat: Number(centerLat),
-                lon: Number(centerLon),
-                regionMode: true,
-                regionSampleCount: previewPoints.length,
-                method: "sampled_boundary_filtered",
-                regionMethodNote: previewMethodNote,
-                series: previewSeries,
-                observedStartYear: Math.min(...previewSeries.map((point) => point.year)),
-                observedEndYear: Math.max(...previewSeries.map((point) => point.year)),
-                source: previewSource,
-                datasetId: previewDatasetId,
-                datasetDocUrl: ANALYSIS_VARIABLES[variable]?.sourceUrl,
-                temporalResolution: ANALYSIS_VARIABLES[variable]?.temporalResolution,
-                sourceUsed: previewResult.dataset_id || previewDatasetId,
-                partialYearExcluded: previewResult.partial_year_excluded || [],
-                firstFullYear: previewResult.first_full_year ?? null,
-                unit: previewUnit,
-                stats: previewStats,
-              };
-              if (requestId !== analysisRequestRef.current) return;
-              setAnalysis(polygonPreview);
-            }
-          } catch (previewError) {
-            console.warn("Could not load the quick NDVI regional preview:", previewError);
-          }
-        }
-        try {
-          regionResponse = await analyzeRegionGEE(place.geojson, variable, dataStartYear, completeDataEndYear, {
+        regionResponse = await analyzeRegionGEE(
+          effectivePlace.geojson,
+          variable,
+          dataStartYear,
+          completeDataEndYear,
+          {
             aggregationMode: aggregationModeOverride || polygonAggregationMode,
             batchYears: 1,
-          });
-        } catch (polygonError) {
-          if (fallbackAnalysis) {
-            series = fallbackAnalysis.series;
-            source = fallbackAnalysis.source;
-            datasetId = fallbackAnalysis.datasetId;
-            unit = fallbackAnalysis.unit;
-            stats = fallbackAnalysis.stats;
-            regionResponse = {
-              method: fallbackAnalysis.method,
-              sample_count: fallbackAnalysis.regionSampleCount,
-            };
-          } else if (polygonPreview) {
-            series = polygonPreview.series;
-            source = polygonPreview.source;
-            datasetId = polygonPreview.datasetId;
-            unit = polygonPreview.unit;
-            stats = polygonPreview.stats;
-            partialYearExcluded = polygonPreview.partialYearExcluded || [];
-            firstFullYear = polygonPreview.firstFullYear ?? null;
-            regionResponse = { method: "sampled_boundary_filtered", sample_count: polygonPreview.regionSampleCount };
-          } else if (variable !== "NDVI / Vegetation" || regionSamplePoints.length === 0) {
-            throw polygonError;
-          } else {
-            const fallbackPoints = regionSamplePoints.slice(0, 16);
-            const sampled = await Promise.allSettled(fallbackPoints.map((point) =>
-              analyzePointGEE(point.lat, point.lon, variable, dataStartYear, completeDataEndYear)));
-            const valid = sampled.flatMap((result, index) => result.status === "fulfilled"
-              ? [{ result: result.value, point: fallbackPoints[index] }]
-              : []);
-            if (!valid.length) throw polygonError;
-            series = mergeSeriesForRegion(valid.map(({ result }) => result.raw_series || []), valid.map(({ point }) => point));
-            const pointResult = valid[0].result;
-            partialYearExcluded = pointResult.partial_year_excluded || [];
-            firstFullYear = pointResult.first_full_year ?? null;
-            source = pointResult.source || ANALYSIS_VARIABLES[variable]?.source || "Google Earth Engine";
-            datasetId = pointResult.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
-            unit = pointResult.unit || ANALYSIS_VARIABLES[variable]?.unit;
-            const seriesStartYear = Math.min(...series.map((point) => point.year));
-            const seriesEndYear = Math.max(...series.map((point) => point.year));
-            const calculated = series.length >= 8
-              ? await analyzeSeries(series, variable, unit, datasetId, seriesStartYear, seriesEndYear)
-              : null;
-            stats = calculated
-              ? mapAnalysisStats(calculated)
-              : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
-            regionResponse = { method: "sampled_boundary_filtered", sample_count: valid.length };
-            sourceWarning = isTurkish
-              ? `Alan-ağırlıklı NDVI poligon isteği tamamlanamadı (${polygonError.message}). Sonuç, poligon içindeki ${valid.length} örnek noktanın hızlı tahminidir; tam alan-ağırlıklı ortalama değildir.`
-              : `The area-weighted NDVI polygon request did not complete (${polygonError.message}). This is a fast estimate from ${valid.length} points inside the boundary, not a full area-weighted mean.`;
-          }
-          if (polygonPreview) {
-            sourceWarning = isTurkish
-              ? `Poligon analizi tamamlanamadı (${polygonError.message}). Grafikteki sonuç ${polygonPreview.regionSampleCount} örnek noktanın hızlı tahminidir; tam poligon alan ortalaması değildir.`
-              : `Polygon analysis did not complete (${polygonError.message}). The chart shows a fast estimate from ${polygonPreview.regionSampleCount} sample points, not a full polygon area mean.`;
-          }
-        }
-        if (!series) {
-          series = (regionResponse.raw_series || []).map((point) => ({
-            year: Number(point.year),
-            value: Number(point.value),
-          }));
-          source = regionResponse.source || ANALYSIS_VARIABLES[variable]?.source || "Google Earth Engine";
-          datasetId = regionResponse.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
-          unit = regionResponse.unit || ANALYSIS_VARIABLES[variable]?.unit;
-          stats = mapAnalysisStats(regionResponse);
-        }
+          },
+        );
+        series = (regionResponse.raw_series || []).map((point) => ({
+          year: Number(point.year),
+          value: Number(point.value),
+        }));
+        source = regionResponse.source || ANALYSIS_VARIABLES[variable]?.source || "Google Earth Engine";
+        datasetId = regionResponse.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
+        unit = regionResponse.unit || ANALYSIS_VARIABLES[variable]?.unit;
+        stats = mapAnalysisStats(regionResponse);
       } else if (regionMode && variable === "Soil Moisture") {
         regionResponse = await analyzeSampledSoilMoistureRegion(
           place.geojson,
@@ -735,11 +644,14 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
           year: Number(point.year),
           value: Number(point.value),
         }));
-        source = regionResponse.source || ANALYSIS_VARIABLES[variable]?.source || "NASA SMAP L4";
+        source = regionResponse.source || ANALYSIS_VARIABLES[variable]?.source || "NASA SMAP via Google Earth Engine";
         datasetId = regionResponse.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
         unit = regionResponse.unit || ANALYSIS_VARIABLES[variable]?.unit;
         stats = mapAnalysisStats(regionResponse);
-      } else if (regionMode && variable === "MERRA-2 Air Temperature") {
+      } else if (regionMode && [
+        "MERRA-2 Air Temperature",
+        "MERRA-2 Evaporation Rate",
+      ].includes(variable)) {
         regionResponse = await analyzeSampledRegionGEE(
           place.geojson,
           variable,
@@ -770,31 +682,75 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         unit = ANALYSIS_VARIABLES[variable]?.unit || NASA_POWER_SERIES[variable]?.unit;
         const seriesStartYear = series.length ? Math.min(...series.map((point) => point.year)) : dataStartYear;
         const seriesEndYear = series.length ? Math.max(...series.map((point) => point.year)) : completeDataEndYear;
-        const calculated = series.length >= 8
+        // Do not recompute a gapped server series over min(year)..max(year):
+        // that would silently treat missing interior years as consecutive.
+        const hasFailedYears = Array.isArray(result.failed_years) && result.failed_years.length > 0;
+        const calculated = !hasFailedYears && series.length >= 8
           ? await analyzeSeries(series, variable, unit, datasetId, seriesStartYear, seriesEndYear)
           : null;
-        stats = calculated ? mapAnalysisStats(calculated) : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
+        stats = hasFailedYears
+          ? mapAnalysisStats(result)
+          : calculated
+            ? mapAnalysisStats(calculated)
+            : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
       } else if (GEE_BACKED_LABELS.includes(variable)) {
-        let pointResults;
+        let failedPointCount = 0;
+        let successfulSamplePoints = regionSamplePoints;
         if (regionMode) {
-          pointResults = await analyzePointsInBatches(
-            regionSamplePoints,
-            (point) => analyzePointGEE(point.lat, point.lon, variable, dataStartYear, completeDataEndYear),
-          );
+          const memorySensitiveQuickVariables = [
+            "MERRA-2 Evaporation Rate",
+            "GLDAS Root-Zone Soil Moisture",
+            "GLDAS Surface Runoff",
+          ];
+          const requestedCounts = memorySensitiveQuickVariables.includes(variable)
+            ? [Math.min(16, regionSamplePoints.length), 8, 4].filter((count) => count > 0 && count <= regionSamplePoints.length)
+            : [regionSamplePoints.length];
+          let settled = [];
+          let activeSamplePoints = regionSamplePoints;
+          for (const pointCount of requestedCounts) {
+            activeSamplePoints = regionSamplePoints.slice(0, pointCount);
+            settled = await analyzePointsIndependently(
+              activeSamplePoints,
+              (point) => analyzePointGEE(point.lat, point.lon, variable, dataStartYear, completeDataEndYear),
+            );
+            const memoryFailure = settled.some((entry) => entry.status === "rejected"
+              && /memory limit exceeded/i.test(String(entry.reason?.message || entry.reason)));
+            if (!memoryFailure || pointCount === requestedCounts[requestedCounts.length - 1]) break;
+          }
+          pointResults = settled
+            .filter((entry) => entry.status === "fulfilled")
+            .map((entry) => entry.value);
+          successfulSamplePoints = settled
+            .filter((entry) => entry.status === "fulfilled")
+            .map((entry) => entry.point);
+          failedPointCount = settled.length - pointResults.length;
+          if (!pointResults.length) {
+            const firstFailure = settled.find((entry) => entry.status === "rejected")?.reason;
+            throw firstFailure || new Error("No sampled point returned a valid annual series");
+          }
         } else {
           pointResults = [await analyzePointGEE(Number(lat), Number(lon), variable, dataStartYear, completeDataEndYear)];
         }
-        const normalisedSeries = pointResults
-          .map((result) => (result.raw_series || []).map((point) => ({
+        const pointSeries = pointResults.map((result, index) => ({
+          point: successfulSamplePoints[index] || { weight: 1 },
+          series: (result.raw_series || []).map((point) => ({
             year: Number(point.year || point.date?.slice(0, 4)),
             value: Number(point.value),
-          })))
-          .filter((values) => values.length > 0);
+          })),
+        })).filter((item) => item.series.length > 0);
+        failedPointCount += pointResults.length - pointSeries.length;
 
         series = regionMode
-          ? mergeSeriesForRegion(normalisedSeries, regionSamplePoints)
-          : mergeSeriesForRegion(normalisedSeries, [{ weight: 1 }]);
+          ? mergeSeriesForRegion(pointSeries.map((item) => item.series), pointSeries.map((item) => item.point))
+          : mergeSeriesForRegion(pointSeries.map((item) => item.series), [{ weight: 1 }]);
         const result = pointResults[0] || {};
+        pointRetrievalInfo = result.retrieval_method ? {
+          method: result.retrieval_method,
+          elapsedSeconds: result.retrieval_elapsed_seconds ?? null,
+          requestCount: result.earth_engine_request_count ?? null,
+          observationCount: result.annual_observation_count ?? null,
+          fallbackReason: result.retrieval_fallback_reason ?? null,
+        } : null;
         partialYearExcluded = result.partial_year_excluded || [];
         firstFullYear = result.first_full_year ?? null;
         datasetId = ANALYSIS_VARIABLES[variable]?.datasetId || result.dataset_id;
@@ -806,6 +762,14 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
           ? await analyzeSeries(series, variable, unit, datasetId, seriesStartYear, seriesEndYear)
           : null;
         stats = calculated ? mapAnalysisStats(calculated) : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
+        if (regionMode) {
+          regionResponse = {
+            method: "sampled_boundary_filtered",
+            sample_count: pointSeries.length,
+            requested_sample_count: regionSamplePoints.length,
+            failed_sample_count: failedPointCount,
+          };
+        }
       } else if (variable === "Sea Level") {
         const seaLevelStartYear = dataStartYear;
         if (regionMode) {
@@ -888,6 +852,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         variable,
         year: selectedYear,
         analysisEndYear: completeDataEndYear,
+        analysisStartYear: dataStartYear,
         lat: Number(centerLat),
         lon: Number(centerLon),
         regionMode,
@@ -895,7 +860,12 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         boundarySource: place?.boundary_source || null,
         boundaryWarning: place?.boundary_warning || null,
         regionSampleCount: regionMode ? (regionResponse?.sample_count ?? regionSamplePoints.length) : 0,
+        failedYears: regionResponse?.failed_years || pointResults?.[0]?.failed_years || [],
+        failedSampleCount: regionResponse?.failed_sample_count || 0,
+        requestedSampleCount: regionResponse?.requested_sample_count ?? (regionMode ? regionSamplePoints.length : 0),
         method: regionResponse?.method || (regionMode ? "sampled_boundary_filtered" : "point"),
+        retrievalMethod: regionResponse?.retrieval_method || pointRetrievalInfo?.method || null,
+        earthEngineRequestCount: regionResponse?.earth_engine_request_count ?? pointRetrievalInfo?.requestCount ?? null,
         validPixelCount: regionResponse?.valid_pixel_count ?? null,
         partialYearExcluded: regionResponse?.partial_year_excluded ?? partialYearExcluded,
         firstFullYear: regionResponse?.first_full_year ?? firstFullYear,
@@ -910,6 +880,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         aggregationMode: regionResponse?.aggregation_mode ?? "annual",
         serverBatchYears: regionResponse?.server_batch_years ?? null,
         elapsedSeconds: regionResponse?.elapsed_seconds ?? null,
+        pointRetrievalInfo,
         regionMethodNote: regionResponse?.method === "sampled_boundary_filtered" && polygonMode
           ? (isTurkish
             ? "Poligon hesabı tamamlanamadığı için hızlı örnekleme yedeği kullanıldı; yöntem satırındaki nokta sayısı ve bu uyarı sonucu tam alan ortalamasından ayırır."
@@ -933,7 +904,11 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         modelOutput: regionResponse?.model_output === true,
         unit,
         stats,
-        errorMessage: variable === "Soil Moisture" && series.length === 0 && completeDataEndYear >= dataStartYear
+        errorMessage: regionResponse?.failed_years?.length > 0 && series.length === 0
+          ? (isTurkish
+            ? "Bu ürün için bölgesel analiz şu an tamamlanamadı, daha kısa dönem ya da farklı bölge dene."
+            : "Regional analysis for this product could not be completed. Try a shorter period or another region.")
+          : variable === "Soil Moisture" && series.length === 0 && completeDataEndYear >= dataStartYear
           ? (isTurkish
             ? "Bu koordinatta geçerli SMAP kara pikseli bulunamadı. Toprak nemi deniz yüzeyinde ölçülmez; kıyı veya açık deniz noktaları veri döndürmeyebilir."
             : "No valid SMAP land pixel was found at this coordinate. Soil moisture is not measured over the ocean; coastal or offshore points may have no data.")
@@ -942,6 +917,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
               ? "Bu koordinatta NASA okyanus altimetri ızgarası bulunamadı. Nokta kara içindeyse kıyıdaki bir deniz noktasına tıklayın; bu ürün yerel gelgit ölçeri değildir."
               : "No NASA ocean-altimetry grid is available at this coordinate. If the point is inland, select an ocean point near the coast; this product is not a local tide-gauge record.")
           : null,
+        errorDetail: (regionResponse?.failed_years || pointResults?.[0]?.failed_years || []).map((item) => `${item.year}: ${item.error}`).join("; ") || null,
         coverageMessage: selectedYear > completeDataEndYear
           ? variable === "GRACE Total Water Storage Anomaly"
             ? (isTurkish
@@ -964,7 +940,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     } catch (error) {
       console.error(error);
       if (requestId !== analysisRequestRef.current) return;
-      if (fallbackAnalysis && polygonMode) {
+      if (fallbackAnalysis && !polygonMode) {
         const analysisResult = {
           ...fallbackAnalysis,
           sourceWarning: isTurkish
@@ -986,15 +962,18 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         datasetId: null,
         datasetDocUrl: ANALYSIS_VARIABLES[variable]?.sourceUrl,
         unit: null,
-        source: variable === "Sea Level"
-          ? "NASA/JPL Sea Level Change Portal unavailable"
-          : GEE_BACKED_LABELS.includes(variable) ? "GEE backend unavailable" : "NASA POWER unavailable",
+        source: ANALYSIS_VARIABLES[variable]?.source || (variable === "Sea Level" ? "NASA sea-level data source" : "NASA data source"),
         errorMessage: error.code === "ANALYSIS_TIMEOUT"
           ? (isTurkish
-            ? "Alan-ağırlıklı poligon analizi 3 dakika içinde tamamlanamadı. Daha küçük bir bölge veya Hızlı tahmin modunu deneyin."
-            : error.message)
-          : error.message,
-        stats: { trend: "Analysis unavailable", slope: null, zScore: null, pValue: null, significant: false, testStatus: "unavailable", message: error.message },
+            ? "Analiz 3 dakika içinde tamamlanamadı. Daha kısa dönem veya farklı bölge deneyin."
+            : "Analysis did not finish within 3 minutes. Try a shorter period or another region.")
+          : (isTurkish
+            ? "Bu ürün için bölgesel analiz şu an tamamlanamadı, daha kısa dönem ya da farklı bölge dene."
+            : "Regional analysis for this product could not be completed. Try a shorter period or another region."),
+        errorDetail: error.message,
+        analysisStartYear: getAnalysisPeriod(variable)[0],
+        analysisEndYear: getAnalysisPeriod(variable)[1],
+        stats: { trend: "statistical_test_unavailable", slope: null, zScore: null, pValue: null, significant: null, testStatus: "unavailable" },
       });
       return null;
     } finally {
@@ -1014,6 +993,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     const variable = event.target.value;
     selectedVariableRef.current = variable;
     setSelectedVariable(variable);
+    setRegionAnalysisMode("sampled_boundary_filtered");
     setAnalysisRange(getAnalysisPeriod(variable));
     setPolygonAggregationMode("annual");
 
@@ -1047,7 +1027,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         year,
         selectedPlace.lat,
         selectedPlace.lon,
-        selectedPlace
+        selectedPlace,
+        "sampled_boundary_filtered",
       );
     }
   }
@@ -1165,49 +1146,15 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       if (selectedVariable === "Sea Level") return;
     }
 
-    const canProgressivelyAnalyze = Boolean(
-      selected.geojson && GEE_BACKED_LABELS.includes(selectedVariable)
+    runAnalysis(
+      selected.display_name,
+      selectedVariable,
+      year,
+      Number(selected.lat),
+      Number(selected.lon),
+      selected,
+      "sampled_boundary_filtered",
     );
-    if (canProgressivelyAnalyze) {
-      const runProgressively = async () => {
-        const quickPromise = runAnalysis(
-          selected.display_name,
-          selectedVariable,
-          year,
-          Number(selected.lat),
-          Number(selected.lon),
-          selected,
-          "sampled_boundary_filtered",
-        );
-        const quickRequestId = analysisRequestRef.current;
-        const quickResult = await quickPromise;
-        if (!quickResult
-          || analysisRequestRef.current !== quickRequestId
-          || selectedVariableRef.current !== selectedVariable) return;
-        setRegionAnalysisMode("polygon_area_weighted");
-        await runAnalysis(
-          selected.display_name,
-          selectedVariable,
-          year,
-          Number(selected.lat),
-          Number(selected.lon),
-          selected,
-          "polygon_area_weighted",
-          true,
-          quickResult,
-        );
-      };
-      runProgressively();
-    } else {
-      runAnalysis(
-        selected.display_name,
-        selectedVariable,
-        year,
-        Number(selected.lat),
-        Number(selected.lon),
-        selected,
-      );
-    }
   }
 
   function handlePointClick(lat, lon) {
@@ -1234,6 +1181,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     setDiscoveriesOpen(false);
     selectedVariableRef.current = discovery.variable;
     setSelectedVariable(discovery.variable);
+    setRegionAnalysisMode("sampled_boundary_filtered");
     setAnalysisRange(getAnalysisPeriod(discovery.variable));
     setSelectedPlace(place);
     setSeaLevelAvailability({ key: coordinateKey(place.lat, place.lon), status: "loading" });
@@ -1561,7 +1509,10 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
           );
         }}
         onRegionAnalysisModeChange={(nextMode) => {
-          setRegionAnalysisMode(nextMode);
+          const normalizedMode = selectedVariable === "Soil Moisture" && nextMode === "sampled_boundary_filtered"
+            ? "polygon_area_weighted"
+            : nextMode;
+          setRegionAnalysisMode(normalizedMode);
           if (selectedPlace) runAnalysis(
             selectedPlace.display_name,
             selectedVariable,
@@ -1569,7 +1520,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
             Number(selectedPlace.lat),
             Number(selectedPlace.lon),
             selectedPlace,
-            nextMode,
+            normalizedMode,
           );
         }}
         regionModeAvailable={Boolean(selectedPlace?.geojson && getRegionBounds(selectedPlace))}
@@ -1578,7 +1529,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
 
       {analysisLoading && <div className="analysisLoading">
         {analysisStage === "polygon"
-          ? (isTurkish ? "Hızlı sonuç hazır; poligon analizi hesaplanıyor…" : "Quick estimate ready; calculating polygon analysis…")
+          ? (isTurkish ? "İsteğe bağlı poligon alan analizi hesaplanıyor…" : "Optional polygon area analysis is running…")
           : analysisStage === "quick"
             ? (isTurkish ? "Sınır içi örneklerden hızlı seri hesaplanıyor…" : "Calculating the quick series from boundary samples…")
             : isTurkish ? "NASA verisi alınıyor…" : "Fetching NASA data…"}

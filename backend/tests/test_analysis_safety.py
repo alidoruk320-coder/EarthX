@@ -2,6 +2,7 @@ import copy
 import json
 import math
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,14 @@ class AnalysisSafetyTests(unittest.TestCase):
     def setUp(self):
         with region_analysis._cache_lock:
             region_analysis._cache.clear()
+
+    def test_removed_merra_precipitable_water_is_not_accepted_by_analysis_services(self):
+        self.assertNotIn("merra2_precipitable_water", VARIABLES)
+        self.assertNotIn("merra2_precipitable_water", region_config)
+        with self.assertRaisesRegex(ValueError, "Bilinmeyen değişken"):
+            trend_engine.analyze_point(39.0, 32.0, "merra2_precipitable_water", 2020, 2021)
+        with self.assertRaisesRegex(ValueError, "not configured"):
+            region_analysis.analyze_region(POLYGON, "merra2_precipitable_water", 2020, 2021)
 
     def test_large_polygon_then_point_analysis_keeps_point_product_and_result(self):
         variables_before = copy.deepcopy(VARIABLES["ndvi"])
@@ -97,6 +106,195 @@ class AnalysisSafetyTests(unittest.TestCase):
         self.assertEqual(result["observation_count"], 0)
         self.assertEqual(result["raw_series"], [])
         self.assertIn("geçerli yıllık gözlem bulunamadı", result["message"])
+
+    def test_masked_empty_band_inherits_source_schema_instead_of_zero_constant_schema(self):
+        fake_ee = MagicMock()
+        selected_band = MagicMock(name="selected_band")
+        empty_masked_band = MagicMock(name="empty_masked_band")
+        collection = MagicMock(name="normalized_collection")
+        collection.first.return_value.select.return_value = selected_band
+        selected_band.updateMask.return_value = empty_masked_band
+        fake_ee.Image.constant.return_value = "zero_mask"
+
+        with patch.object(trend_engine, "ee", fake_ee):
+            actual = trend_engine._masked_band_template(collection, "sm_surface")
+
+        self.assertIs(actual, empty_masked_band)
+        collection.first.return_value.select.assert_called_once_with(["sm_surface"])
+        selected_band.updateMask.assert_called_once_with("zero_mask")
+        fake_ee.Image.constant.assert_called_once_with(0)
+
+    def test_smap_get_region_parser_reads_annual_composite_rows(self):
+        def timestamp(year, month, day=1, hour=0):
+            return int(datetime(year, month, day, hour, tzinfo=timezone.utc).timestamp() * 1000)
+
+        table = [
+            ["id", "longitude", "latitude", "time", "sm_surface"],
+            ["a", 29.0, 41.0, timestamp(2024, 1), 0.4],
+            ["b", 29.0, 41.0, timestamp(2025, 1), None],
+        ]
+
+        rows, observation_count = trend_engine._annualize_smap_region_table(
+            table, "sm_surface", 2024, 2025,
+        )
+
+        self.assertAlmostEqual(rows[0]["properties"]["value"], 0.4)
+        self.assertIsNone(rows[1]["properties"]["value"])
+        self.assertEqual(observation_count, 1)
+
+    def test_smap_get_region_fetch_uses_one_getinfo_at_native_projection(self):
+        fake_ee = MagicMock()
+        point = MagicMock(name="point")
+        collection = MagicMock(name="smap_collection")
+        projection = MagicMock(name="native_projection")
+        table = [["id", "longitude", "latitude", "time", "sm_surface"]]
+        monthly = MagicMock(name="monthly_composites")
+        fake_ee.ImageCollection.return_value.filterBounds.return_value.filterDate.return_value.select.return_value = collection
+        collection.map.return_value = collection
+        collection.first.return_value.select.return_value.projection.return_value = projection
+        fake_ee.ImageCollection.fromImages.return_value = monthly
+        monthly.getRegion.return_value.getInfo.return_value = table
+
+        with patch.object(trend_engine, "ee", fake_ee):
+            rows, count = trend_engine._fetch_smap_get_region_features(
+                point, VARIABLES["soil_moisture"], 2024, 2024,
+            )
+
+        self.assertEqual(rows[0]["properties"], {"year": 2024, "value": None})
+        self.assertEqual(count, 0)
+        monthly.getRegion.assert_called_once_with(
+            point, scale=VARIABLES["soil_moisture"]["scale_meters"], crs=projection,
+        )
+        monthly.getRegion.return_value.getInfo.assert_called_once_with()
+
+    def test_smap_point_monthly_batches_use_schema_matched_empty_image(self):
+        fake_ee = MagicMock()
+        collection = MagicMock(name="normalized_smap_collection")
+        monthly = MagicMock(name="monthly_collection")
+        template = MagicMock(name="typed_empty_template")
+        fake_ee.ImageCollection.return_value.filterBounds.return_value.select.return_value = collection
+        collection.map.return_value = collection
+        collection.filterDate.return_value = monthly
+        monthly.merge.return_value = monthly
+        fake_ee.ImageCollection.fromImages.return_value = monthly
+        monthly.mean.return_value.rename.return_value = MagicMock(name="monthly_mean")
+        annual = MagicMock(name="annual_image")
+        fake_ee.ImageCollection.fromImages.return_value.mean.return_value = annual
+        annual.multiply.return_value.add.return_value = annual
+        annual.reduceRegion.return_value.get.return_value = 0.25
+        fake_ee.List.sequence.return_value.map.side_effect = lambda callback: callback(2024)
+        fake_ee.FeatureCollection.return_value.getInfo.return_value = {
+            "features": [{"properties": {"year": 2024, "value": 0.25}}],
+        }
+
+        with patch.object(trend_engine, "ee", fake_ee), \
+             patch.object(trend_engine, "_masked_band_template", return_value=template) as make_empty:
+            rows = trend_engine._fetch_memory_safe_point_features(
+                fake_ee.Geometry.Point.return_value,
+                {**VARIABLES["soil_moisture"], "scale_meters": 11000},
+                2024,
+                2024,
+                batch_size=1,
+            )
+
+        self.assertEqual(rows[0]["properties"]["value"], 0.25)
+        make_empty.assert_called_once_with(collection, "sm_surface")
+        self.assertEqual(monthly.merge.call_count, 12)
+        for call in monthly.merge.call_args_list:
+            self.assertEqual(call.args[0], fake_ee.ImageCollection.fromImages.return_value)
+
+    def test_merra_evaporation_point_analysis_uses_sequential_single_year_batches(self):
+        annual = [
+            {"properties": {"year": year, "value": 12.0 + year - 2000}}
+            for year in range(2000, 2011)
+        ]
+        with patch.object(trend_engine.ee.Geometry, "Point", return_value=MagicMock()), \
+             patch.object(
+                 trend_engine,
+                 "_fetch_memory_safe_point_features",
+                 return_value=(annual, [], 11),
+             ) as fetch:
+            result = trend_engine.analyze_point(
+                39.0, 32.0, "merra2_evaporation", 2000, 2010,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["earth_engine_request_count"], 11)
+        self.assertEqual(result["failed_years"], [])
+        self.assertEqual(fetch.call_args.kwargs["batch_size"], 1)
+        self.assertTrue(fetch.call_args.kwargs["continue_on_error"])
+        self.assertTrue(fetch.call_args.kwargs["return_metadata"])
+
+    def test_memory_safe_point_fetch_falls_back_to_monthly_requests_after_year_error(self):
+        fake_ee = MagicMock()
+        collection = MagicMock()
+        collection.filterBounds.return_value = collection
+        collection.select.return_value = collection
+        collection.map.return_value = collection
+        collection.first.return_value.select.return_value = MagicMock()
+        empty = MagicMock()
+        batch = MagicMock()
+        fake_ee.ImageCollection.return_value = collection
+        fake_ee.ImageCollection.fromImages.return_value = MagicMock()
+        fake_ee.List.sequence.return_value.map.return_value = "mapped"
+        fake_ee.FeatureCollection.side_effect = [batch, batch, batch]
+        batch.getInfo.side_effect = [
+            {"features": [{"properties": {"year": 2015, "value": 0.3}}]},
+            RuntimeError("User memory limit exceeded"),
+            {"features": [{"properties": {"year": 2017, "value": 0.4}}]},
+        ]
+        fake_ee.Image.constant.return_value = empty
+        fake_ee.Reducer.mean.return_value = "mean"
+        fake_ee.Geometry.Point.return_value.buffer.return_value = "buffer"
+
+        with patch.object(trend_engine, "ee", fake_ee), \
+             patch.object(trend_engine, "_masked_band_template", return_value=empty):
+            rows, failed, requests = trend_engine._fetch_memory_safe_point_features(
+                fake_ee.Geometry.Point.return_value,
+                VARIABLES["merra2_evaporation"],
+                2015,
+                2017,
+                batch_size=1,
+                continue_on_error=True,
+                return_metadata=True,
+            )
+
+        self.assertEqual([row["properties"]["year"] for row in rows], [2015, 2016, 2017])
+        self.assertEqual(failed, [])
+        self.assertEqual(requests, 15)
+
+    def test_soil_moisture_point_analysis_uses_get_region_path(self):
+        fake_ee = MagicMock()
+        point = MagicMock(name="smap_point")
+        fake_ee.Geometry.Point.return_value = point
+        features = [{"properties": {"year": 2015, "value": 0.25}}]
+
+        with patch.object(trend_engine, "ee", fake_ee), \
+             patch.object(trend_engine, "_fetch_smap_get_region_features", return_value=(features, 1)) as fetch:
+            result = trend_engine.analyze_point(39.0, 32.0, "soil_moisture", 2015, 2015)
+
+        self.assertEqual(result["variable"], "soil_moisture")
+        self.assertEqual(result["raw_series"], [{"date": "2015-01-01", "year": 2015, "value": 0.25}])
+        self.assertEqual(result["retrieval_method"], "getRegion_single_request_monthly_then_annual_mean")
+        self.assertEqual(result["earth_engine_request_count"], 1)
+        self.assertEqual(result["annual_observation_count"], 1)
+        fetch.assert_called_once_with(point, VARIABLES["soil_moisture"], 2015, 2015)
+
+    def test_soil_moisture_point_analysis_falls_back_to_monthly_batches(self):
+        fake_ee = MagicMock()
+        point = MagicMock(name="smap_point")
+        fake_ee.Geometry.Point.return_value = point
+        features = [{"properties": {"year": 2015, "value": 0.25}}]
+
+        with patch.object(trend_engine, "ee", fake_ee), \
+             patch.object(trend_engine, "_fetch_smap_get_region_features", side_effect=RuntimeError("unsupported getRegion")), \
+             patch.object(trend_engine, "_fetch_memory_safe_point_features", return_value=features) as fallback:
+            result = trend_engine.analyze_point(39.0, 32.0, "soil_moisture", 2015, 2015)
+
+        self.assertEqual(result["retrieval_method"], "monthly_batched_fallback")
+        self.assertEqual(result["earth_engine_request_count"], 1)
+        self.assertEqual(result["retrieval_fallback_reason"], "unsupported getRegion")
+        fallback.assert_called_once_with(point, VARIABLES["soil_moisture"], 2015, 2015, batch_size=3)
 
     def test_analysis_endpoint_serializes_nested_non_finite_values_as_null(self):
         analysis_paths = {

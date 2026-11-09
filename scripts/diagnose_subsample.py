@@ -23,7 +23,6 @@ REGION = "istanbul"
 VARIABLES = (
     "soil_moisture",
     "merra2_t2m",
-    "merra2_precipitable_water",
     "merra2_evaporation",
 )
 

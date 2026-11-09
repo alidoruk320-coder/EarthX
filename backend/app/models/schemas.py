@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -23,7 +25,7 @@ class RegionAnalysisRequest(BaseModel):
     variable: str = Field(min_length=1)
     start_year: int = Field(ge=1970, le=2100)
     end_year: int = Field(ge=1970, le=2100)
-    sampling_method: str | None = None
+    sampling_method: Optional[str] = None
     sample_points: list[dict] = Field(default_factory=list, max_length=16)
     series_only: bool = False
     aggregation_mode: str = Field(default="annual", pattern="^(annual|monthly_server_batch)$")

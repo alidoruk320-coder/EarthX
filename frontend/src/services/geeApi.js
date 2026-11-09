@@ -9,7 +9,6 @@ export const LABEL_TO_ID = {
   "GPM Precipitation Rate": "gpm_precipitation",
   "Total Column Ozone": "total_column_ozone",
   "MERRA-2 Air Temperature": "merra2_t2m",
-  "MERRA-2 Precipitable Water": "merra2_precipitable_water",
   "MERRA-2 Evaporation Rate": "merra2_evaporation",
   "GLDAS Root-Zone Soil Moisture": "gldas_root_moisture",
   "GLDAS Surface Runoff": "gldas_surface_runoff",
@@ -22,7 +21,6 @@ export const GEE_BACKED_LABELS = [
   "GPM Precipitation Rate",
   "Total Column Ozone",
   "MERRA-2 Air Temperature",
-  "MERRA-2 Precipitable Water",
   "MERRA-2 Evaporation Rate",
   "GLDAS Root-Zone Soil Moisture",
   "GLDAS Surface Runoff",
@@ -106,6 +104,8 @@ export function analyzeRegionGEE(geometry, variableLabel, startYear, endYear, op
 
 export function analyzeSampledSoilMoistureRegion(geometry, samplePoints, startYear, endYear) {
   return request("/analyze-region", {
+    timeoutMs: 180_000,
+    timeoutMessage: "SMAP hızlı bölge analizi 3 dakika içinde tamamlanamadı. Daha kısa dönem veya daha küçük bölge deneyin.",
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

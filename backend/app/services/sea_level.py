@@ -22,12 +22,15 @@ NOAA_SERIES_TIMEOUT_SECONDS = 90
 HYCOM_LATEST_COMPLETE_YEAR = 2023
 
 
+from typing import Optional
+
+
 def _read_noaa_rows(
     lat: float,
     lon: float,
     start_date: str,
     end_date: str,
-    deadline: float | None = None,
+    deadline: Optional[float] = None,
 ) -> list[dict]:
     query = f"sla[({start_date}T00:00:00Z):({end_date}T00:00:00Z)][({lat:.6f})][({lon:.6f})]"
     request = Request(
@@ -89,7 +92,7 @@ def _read_noaa_series_rows(
     return rows
 
 
-def _row_value(row: dict) -> float | None:
+def _row_value(row: dict) -> Optional[float]:
     value = row.get("sla (m)", row.get("sla"))
     try:
         parsed = float(value)
@@ -116,7 +119,7 @@ def check_sea_level_availability(lat: float, lon: float) -> dict:
     return {"available": False, "status": "land_or_no_ocean_cell", "dataset_id": NOAA_DATASET_ID}
 
 
-def _detect_step_change(series: list[tuple[int, float]]) -> int | None:
+def _detect_step_change(series: list[tuple[int, float]]) -> Optional[int]:
     if len(series) < 7:
         return None
     annual_differences = [

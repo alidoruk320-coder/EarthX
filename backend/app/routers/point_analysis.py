@@ -10,7 +10,7 @@ from app.services.trend_engine import analyze_annual_series
 from app.services.sea_level import analyze_sea_level, check_sea_level_availability
 from app.services.region_analysis import (
     analyze_region,
-    analyze_sampled_merra2_t2m,
+    analyze_sampled_merra2_region,
     analyze_sampled_soil_moisture,
     polygonal_geometry,
 )
@@ -148,7 +148,10 @@ def analyze_point_endpoint(req: PointAnalysisRequest):
             end_year=req.end_year,
         )
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        detail = str(e)
+        if "temporarily unavailable" in detail.lower() or "memory limit" in detail.lower():
+            raise HTTPException(status_code=503, detail=detail)
+        raise HTTPException(status_code=404, detail=detail)
     except Exception as e:
         logger.exception("NASA point analysis failed for %s", req.variable)
         detail = str(e)
@@ -167,15 +170,20 @@ def analyze_region_endpoint(req: RegionAnalysisRequest):
             raise ValueError("end_year must be greater than or equal to start_year")
         if req.sampling_method == "sampled_boundary_filtered":
             if variable == "soil_moisture":
-                return analyze_sampled_soil_moisture(
-                    req.geometry, req.sample_points, req.start_year, req.end_year,
+                raise ValueError(
+                    "SMAP sampled-region mode is temporarily disabled after repeated Earth Engine memory-limit failures. Use point analysis or polygon analysis instead."
                 )
-            if variable == "merra2_t2m":
-                return analyze_sampled_merra2_t2m(
+            if variable in {"merra2_t2m", "merra2_evaporation"}:
+                return analyze_sampled_merra2_region(
                     req.geometry, req.sample_points, req.start_year, req.end_year,
+                    variable=variable,
+                )
+            if variable in {"gldas_root_moisture", "gldas_surface_runoff"}:
+                raise ValueError(
+                    "Sampled-region endpoint mode is not implemented for this variable; use point series or polygon analysis."
                 )
             raise ValueError(
-                "Sampled-region endpoint mode is currently enabled only for SMAP soil moisture and MERRA-2 air temperature"
+                "Sampled-region endpoint mode is currently enabled only for MERRA-2 air temperature"
             )
         result = analyze_region(
             req.geometry, variable, req.start_year, req.end_year,

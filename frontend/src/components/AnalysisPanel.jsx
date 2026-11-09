@@ -98,6 +98,7 @@ export default function AnalysisPanel({
   onPolygonAggregationModeChange,
 }) {
   const isTurkish = language === "tr";
+  const quickRegionEstimateDisabled = analysisVariable === "Soil Moisture";
   if (!data) {
     return (
       <div className="analysisPanel empty">
@@ -177,6 +178,9 @@ export default function AnalysisPanel({
   const seriesCoversAnalysisPeriod = reportSeries.length > 0
     && Math.max(...reportSeries.map((point) => Number(point.year))) >= Number(reportEndYear);
   const validCoordinates = Number.isFinite(Number(lat)) && Number.isFinite(Number(lon));
+  const polygonCalculationWarning = Boolean(
+    data.regionMode && (data.method === "polygon_area_weighted" || data.method === "polygon_area_weighted_single_cell")
+  );
   const validStatistics = Number.isFinite(Number(stats?.slope))
     && stats?.slope != null
     && stats?.pValue != null
@@ -208,7 +212,9 @@ export default function AnalysisPanel({
       ? stats?.testStatus === "unavailable" ? "TEST HESAPLANAMADI" : "YETERSİZ VERİ"
       : confidence.tone === "high" ? "GÜÇLÜ İSTATİSTİKSEL KANIT" : confidence.tone === "moderate" ? "İSTATİSTİKSEL KANIT VAR" : "ANLAMLI KANIT YOK",
     note: !hasStatistics
-      ? stats?.message || "Geçerli istatistiksel test sonucu olmadan kanıt düzeyi belirlenemez."
+      ? stats?.testStatus === "unavailable"
+        ? (isTurkish ? "Geçerli test istatistikleri alınamadığı için kanıt düzeyi belirlenemedi." : "Evidence cannot be assigned because valid test statistics are unavailable.")
+        : (isTurkish ? "Geçerli istatistiksel test sonucu olmadan kanıt düzeyi belirlenemez." : "A statistical evidence tier cannot be assigned without a valid test result.")
       : confidence.tone === "high" ? "p < 0,01: güçlü kanıt." : confidence.tone === "moderate" ? "p < 0,05: istatistiksel kanıt." : "İstatistiksel olarak anlamlı monoton trend saptanmadı; doğal değişkenlik olası.",
   } : confidence;
   const trendText = (() => {
@@ -220,9 +226,7 @@ export default function AnalysisPanel({
         : "Model output: slope shown; statistical significance is not assessed.";
     }
     if (!hasStatistics || stats?.testStatus === "unavailable") {
-      const message = stats?.message;
-      const label = isTurkish ? "İstatistiksel test hesaplanamadı" : "Statistical test could not be calculated";
-      return message ? `${label}: ${message}` : label;
+      return isTurkish ? "İstatistiksel test hesaplanamadı" : "Statistical test could not be calculated";
     }
     if (trend.toLowerCase() === "insufficient data" || trend.toLowerCase() === "insufficient_data") return isTurkish ? "İstatistiksel test için yetersiz veya aralıklı veri" : "Insufficient or discontinuous data for significance test";
     if (trend.toLowerCase() === "analysis unavailable" || trend.toLowerCase() === "no verified point series") return isTurkish ? "Analiz verisi alınamadı" : "Analysis data unavailable";
@@ -437,22 +441,53 @@ export default function AnalysisPanel({
         </p>
       </div>
 
+      {polygonCalculationWarning && (
+        <div className="polygonProcessingNotice" role="status">
+          <strong>{isTurkish ? "LÜTFEN BEKLEYİNİZ" : "PLEASE WAIT"}</strong>
+          <span>
+            {isTurkish
+              ? "Poligon analizi hesaplaması çok daha ağırdır; bu işlem yaklaşık 1 dakika sürebilir."
+              : "Polygon analysis is much heavier to compute; this step may take about 1 minute."}
+          </span>
+        </div>
+      )}
+
       {regionModeAvailable && <div className="regionAnalysisMode">
         <label htmlFor="regionAnalysisMode">
           {isTurkish ? "BÖLGESEL ANALİZ YÖNTEMİ" : "REGIONAL ANALYSIS METHOD"}
         </label>
-        <select
-          id="regionAnalysisMode"
-          value={regionAnalysisMode}
-          onChange={(event) => onRegionAnalysisModeChange?.(event.target.value)}
-        >
-          <option value="sampled_boundary_filtered">
-            {isTurkish ? "Hızlı tahmin (sınır-filtreli örnekleme, ≤16 nokta)" : "Fast estimate (boundary-filtered sampling, ≤16 points)"}
-          </option>
-          <option value="polygon_area_weighted" disabled={!canUsePolygonMode}>
-            {isTurkish ? "Poligon analizi (alan ağırlıklı)" : "Polygon analysis (area-weighted)"}
-          </option>
-        </select>
+        {quickRegionEstimateDisabled ? (
+          <>
+            <select
+              id="regionAnalysisMode"
+              value={regionAnalysisMode === "sampled_boundary_filtered" ? "polygon_area_weighted" : regionAnalysisMode}
+              onChange={(event) => onRegionAnalysisModeChange?.(event.target.value)}
+              disabled={!canUsePolygonMode}
+            >
+              <option value="polygon_area_weighted">
+                {isTurkish ? "Poligon analizi (alan ağırlıklı)" : "Polygon analysis (area-weighted)"}
+              </option>
+            </select>
+            <small>
+              {isTurkish
+                ? "Bu veri için hızlı sınır tahmini kapatılmıştır; Google Earth Engine çok yıllık örnekleme isteklerinde bellek sınırına düşmektedir."
+                : "Fast boundary estimates are disabled for this variable because Google Earth Engine exceeds memory limits on multi-year sampling requests."}
+            </small>
+          </>
+        ) : (
+          <select
+            id="regionAnalysisMode"
+            value={regionAnalysisMode}
+            onChange={(event) => onRegionAnalysisModeChange?.(event.target.value)}
+          >
+            <option value="sampled_boundary_filtered">
+              {isTurkish ? "Hızlı tahmin (sınır-filtreli örnekleme, ≤16 nokta)" : "Fast estimate (boundary-filtered sampling, ≤16 points)"}
+            </option>
+            <option value="polygon_area_weighted" disabled={!canUsePolygonMode}>
+              {isTurkish ? "Poligon analizi (alan ağırlıklı)" : "Polygon analysis (area-weighted)"}
+            </option>
+          </select>
+        )}
         {!canUsePolygonMode && <small>{isTurkish
           ? "Poligon analizi GeoJSON sınırı ve GEE değişkeni gerektirir. NASA POWER ve deniz seviyesi hızlı örneklemeyi kullanır."
           : "Polygon analysis requires a GeoJSON boundary and a GEE variable. NASA POWER and sea level use fast sampling."}</small>}
@@ -477,7 +512,7 @@ export default function AnalysisPanel({
         <small>{isTurkish ? "Harita zaman kaydırıcısı yalnızca görüntü yılını değiştirir." : "The map timeline changes imagery year only."}</small>
       </div>}
       {regionAnalysisMode === "polygon_area_weighted" && canUsePolygonMode
-        && ["Soil Moisture", "MERRA-2 Air Temperature", "MERRA-2 Precipitable Water", "MERRA-2 Evaporation Rate"].includes(variable)
+        && ["Soil Moisture", "MERRA-2 Air Temperature", "MERRA-2 Evaporation Rate"].includes(variable)
         && <div className="regionAnalysisMode">
           <label htmlFor="polygonAggregationMode">{isTurkish ? "POLİGON ZAMANSAL TOPLAMA" : "POLYGON TEMPORAL AGGREGATION"}</label>
           <select id="polygonAggregationMode" value={polygonAggregationMode} onChange={(event) => onPolygonAggregationModeChange?.(event.target.value)}>
@@ -497,7 +532,7 @@ export default function AnalysisPanel({
         <div>
           <h2>{name}</h2>
           <span className="analysisPeriod">
-            {observedStartYear ?? "2002"} → {observedEndYear ?? "—"}
+            {observedStartYear ?? data.analysisStartYear ?? analysisRange?.[0] ?? "—"} → {observedEndYear ?? data.analysisEndYear ?? analysisRange?.[1] ?? "—"}
           </span>
           {observedEndYear != null && observedEndYear < year && (
             <small className="coverageNote">
@@ -562,8 +597,8 @@ export default function AnalysisPanel({
       </small>}
       {data.regionMode && <small className="coverageNote">
         {isTurkish
-          ? `Yöntem: ${data.method === "bounding_box_fallback" ? "bounding box örneklemesi" : data.method === "polygon_area_weighted_single_cell" ? "poligon merkez-hücresi yedeği" : data.method === "polygon_area_weighted" ? "poligon alan-ağırlıklı" : "sınır-filtreli örnekleme"}${data.method?.startsWith("polygon_area_weighted") ? ` · Geçerli piksel/yıl: ${data.validPixelCountRange?.min ?? 0}–${data.validPixelCountRange?.max ?? 0} (en az ${data.validPixelCount ?? 0})` : ` · Kullanılan örnek nokta: ${data.regionSampleCount ?? 0}/16`}`
-          : `Method: ${data.method === "bounding_box_fallback" ? "bounding-box sampling" : data.method === "polygon_area_weighted_single_cell" ? "polygon center-cell fallback" : data.method === "polygon_area_weighted" ? "polygon area-weighted" : "boundary-filtered sampling"}${data.method?.startsWith("polygon_area_weighted") ? ` · Valid pixels/year: ${data.validPixelCountRange?.min ?? 0}–${data.validPixelCountRange?.max ?? 0} (minimum ${data.validPixelCount ?? 0})` : ` · Sample points used: ${data.regionSampleCount ?? 0}/16`}`}
+          ? `Yöntem: ${data.method === "bounding_box_fallback" ? "bounding box örneklemesi" : data.method === "polygon_area_weighted_single_cell" ? "poligon merkez-hücresi yedeği" : data.method === "polygon_area_weighted" ? "poligon alan-ağırlıklı" : "sınır-filtreli örnekleme"}${data.method?.startsWith("polygon_area_weighted") ? ` · Geçerli piksel/yıl: ${data.validPixelCountRange?.min ?? 0}–${data.validPixelCountRange?.max ?? 0} (en az ${data.validPixelCount ?? 0})` : ` · Kullanılan örnek nokta: ${data.regionSampleCount ?? 0}/${data.requestedSampleCount ?? 16}`}`
+          : `Method: ${data.method === "bounding_box_fallback" ? "bounding-box sampling" : data.method === "polygon_area_weighted_single_cell" ? "polygon center-cell fallback" : data.method === "polygon_area_weighted" ? "polygon area-weighted" : "boundary-filtered sampling"}${data.method?.startsWith("polygon_area_weighted") ? ` · Valid pixels/year: ${data.validPixelCountRange?.min ?? 0}–${data.validPixelCountRange?.max ?? 0} (minimum ${data.validPixelCount ?? 0})` : ` · Sample points used: ${data.regionSampleCount ?? 0}/${data.requestedSampleCount ?? 16}`}`}
       </small>}
       {data.resolutionWarning && <small className="coverageNote" role="status">{data.resolutionWarning}</small>}
       {data.lowCoverageYears?.length > 0 && <small className="coverageNote" role="status">
@@ -607,6 +642,33 @@ export default function AnalysisPanel({
       </small>}
 
       {data.coverageMessage && <small className="coverageNote" role="status">{data.coverageMessage}</small>}
+      {data.pointRetrievalInfo && <div className="coverageNote" role="status">
+        {data.pointRetrievalInfo.method === "monthly_means_sequential_single_year_requests"
+          ? (isTurkish
+            ? `MERRA-2 veri alma: yıl yıl sıralı istek · aylık ortalamalardan yıllık değer · ${data.pointRetrievalInfo.requestCount ?? "—"} Earth Engine isteği${data.pointRetrievalInfo.elapsedSeconds != null ? ` · ${data.pointRetrievalInfo.elapsedSeconds} sn` : ""}.`
+            : `MERRA-2 retrieval: sequential single-year requests · annual values from monthly means · ${data.pointRetrievalInfo.requestCount ?? "—"} Earth Engine requests${data.pointRetrievalInfo.elapsedSeconds != null ? ` · ${data.pointRetrievalInfo.elapsedSeconds} s` : ""}.`)
+          : data.pointRetrievalInfo.method === "getRegion_single_request_monthly_then_annual_mean"
+          ? (isTurkish
+            ? `Nokta veri alma: tek Earth Engine isteği · 3 saatlik SMAP görüntüleri önce aylık, sonra yıllık ortalamaya indirildi · ${data.pointRetrievalInfo.observationCount ?? "—"} geçerli yıllık bileşik${data.pointRetrievalInfo.elapsedSeconds != null ? ` · ${data.pointRetrievalInfo.elapsedSeconds} sn` : ""}.`
+            : `Point retrieval: one Earth Engine request · 3-hourly SMAP images averaged monthly, then annually · ${data.pointRetrievalInfo.observationCount ?? "—"} valid annual composites${data.pointRetrievalInfo.elapsedSeconds != null ? ` · ${data.pointRetrievalInfo.elapsedSeconds} s` : ""}.`)
+          : (isTurkish
+            ? `Nokta veri alma yedeği: 3 yıllık aylık bloklar · ${data.pointRetrievalInfo.requestCount ?? "—"} Earth Engine isteği${data.pointRetrievalInfo.elapsedSeconds != null ? ` · ${data.pointRetrievalInfo.elapsedSeconds} sn` : ""}.`
+            : `Point retrieval fallback: monthly composites in 3-year blocks · ${data.pointRetrievalInfo.requestCount ?? "—"} Earth Engine requests${data.pointRetrievalInfo.elapsedSeconds != null ? ` · ${data.pointRetrievalInfo.elapsedSeconds} s` : ""}.`)}
+        {data.pointRetrievalInfo.fallbackReason && <details className="analysisErrorDetail">
+          <summary>{isTurkish ? "Yedek yönteme geçiş ayrıntısı" : "Fallback reason"}</summary>
+          <small>{data.pointRetrievalInfo.fallbackReason}</small>
+        </details>}
+      </div>}
+      {data.retrievalMethod === "server_monthly_composites_single_response" && <div className="coverageNote" role="status">
+        {isTurkish
+          ? `SMAP hızlı tahmini: 3 saatlik görüntüler GEE sunucusunda aylık ortalamaya, ardından yıllık ortalamaya indirgenir · ${data.earthEngineRequestCount ?? "—"} analiz isteği · ${data.regionSampleCount ?? 0}/${data.requestedSampleCount ?? 16} nokta.`
+          : `SMAP fast estimate: 3-hourly images are averaged monthly, then annually on the GEE server · ${data.earthEngineRequestCount ?? "—"} analysis request(s) · ${data.regionSampleCount ?? 0}/${data.requestedSampleCount ?? 16} points.`}
+      </div>}
+      {data.regionMode && data.retrievalMethod === "monthly_means_sequential_single_year_requests" && <div className="coverageNote" role="status">
+        {isTurkish
+          ? `MERRA-2 hızlı tahmini: yıllar sırayla, her istekte tek yılın 12 aylık ortalaması · ${data.earthEngineRequestCount ?? "—"} Earth Engine isteği · ${data.regionSampleCount ?? 0}/${data.requestedSampleCount ?? 16} nokta.`
+          : `MERRA-2 fast estimate: sequential years, each request reduces one year's 12 monthly means · ${data.earthEngineRequestCount ?? "—"} Earth Engine requests · ${data.regionSampleCount ?? 0}/${data.requestedSampleCount ?? 16} points.`}
+      </div>}
       {data.sourceWarning && <div className="dataQualityAlert" role="status">
         <strong>{isTurkish ? "VERİ KAYNAĞI NOTU" : "DATA SOURCE NOTE"}</strong>
         <p>{data.sourceWarning}</p>
@@ -621,7 +683,20 @@ export default function AnalysisPanel({
           : `The source-derived annual summaries for these years are numerically identical. The app does not fill missing years by copying the previous value. ${variable} is reduced from ${temporalResolution || "the source cadence"} observations to an annual ${data.aggregationLabel || "summary"}; equal values can occur when annual aggregates match or when a sub-cell polygon uses one source cell. This alone is not evidence of a significant trend.`}</p>
       </div>}
       {data.errorMessage && <small className="coverageNote" role="status">{data.errorMessage}</small>}
-      {stats?.message && <small className="coverageNote" role="status">{stats.message}</small>}
+      {(data.errorDetail || (!data.errorMessage && stats?.message)) && <details className="analysisErrorDetail">
+        <summary>{isTurkish ? "Teknik ayrıntı" : "Technical details"}</summary>
+        <small>{data.errorDetail || stats.message}</small>
+      </details>}
+      {data.failedYears?.length > 0 && <small className="coverageNote" role="status">
+        {isTurkish
+          ? `Bazı yıllar alınamadı (${data.failedYears.map((item) => item.year).join(", ")}); diğer geçerli yıllar korunmuştur.`
+          : `Some years could not be retrieved (${data.failedYears.map((item) => item.year).join(", ")}); other valid years were retained.`}
+      </small>}
+      {data.failedSampleCount > 0 && <small className="coverageNote" role="status">
+        {isTurkish
+          ? `${data.failedSampleCount} örnek nokta başarısız oldu; kalan ${data.regionSampleCount} nokta kullanıldı.`
+          : `${data.failedSampleCount} sample points failed; the remaining ${data.regionSampleCount} points were used.`}
+      </small>}
 
       <AnnualSeriesChart
         series={reportSeries}

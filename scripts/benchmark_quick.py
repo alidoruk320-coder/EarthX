@@ -13,22 +13,32 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.config import GEE_PROJECT_ID, region_config
+from app.config import CURRENT_COMPLETE_YEAR, GEE_PROJECT_ID, region_config
 from app.services.gee_client import init_gee, is_gee_initialized
 from app.services.region_analysis import ee, polygonal_geometry
 
 REQUEST_TIMEOUT_MS = 300_000
 CASE_TIMEOUT_SECONDS = 300
 VARIABLES = {
-    "soil_moisture": (2015, 2025),
-    "merra2_t2m": (2000, 2025),
-    "merra2_precipitable_water": (2000, 2025),
-    "merra2_evaporation": (2000, 2025),
+    "ndvi": (2001, CURRENT_COMPLETE_YEAR),
+    "soil_moisture": (2015, CURRENT_COMPLETE_YEAR),
+    "grace_tws": (2003, 2016),
+    "gpm_precipitation": (2001, 2024),
+    "total_column_ozone": (1979, CURRENT_COMPLETE_YEAR),
+    "merra2_t2m": (1980, CURRENT_COMPLETE_YEAR),
+    "merra2_evaporation": (1980, CURRENT_COMPLETE_YEAR),
+    "gldas_root_moisture": (2000, CURRENT_COMPLETE_YEAR),
+    "gldas_surface_runoff": (2000, CURRENT_COMPLETE_YEAR),
+    "temperature": (2002, CURRENT_COMPLETE_YEAR),
+    "precipitation": (2002, CURRENT_COMPLETE_YEAR),
+    "sea_level": (2017, CURRENT_COMPLETE_YEAR),
 }
 REGIONS = ("istanbul", "turkey")
 WORKER_FLAG = "--internal-worker"
@@ -191,11 +201,12 @@ def _weighted_merged_series(point_results, points):
 def run_worker(payload):
     from app.services.region_analysis import analyze_sampled_merra2_t2m, analyze_sampled_soil_moisture
     from app.services.trend_engine import analyze_annual_series, analyze_point
-
-    if not initialize_gee_with_deadline():
-        raise RuntimeError("Earth Engine initialization failed; configure backend/.env and credentials.")
+    from app.services.sea_level import analyze_sea_level
 
     variable = payload["variable"]
+    if variable not in {"temperature", "precipitation", "sea_level"} and not initialize_gee_with_deadline():
+        raise RuntimeError("Earth Engine initialization failed; configure backend/.env and credentials.")
+
     start_year, end_year = payload["start_year"], payload["end_year"]
     geometry, points = payload["geometry"], payload["sample_points"]
     if variable == "soil_moisture":
@@ -206,29 +217,104 @@ def run_worker(payload):
         result = analyze_sampled_merra2_t2m(geometry, points, start_year, end_year)
         sample_count = result.get("sample_count", len(points))
         stats = result
-    else:
+    elif variable in {"temperature", "precipitation"}:
+        parameter = "T2M" if variable == "temperature" else "PRECTOTCORR"
         point_results = []
+        failures = []
         for point in points:
-            point_results.append(analyze_point(
-                point["lat"], point["lon"], variable, start_year, end_year
-            ))
-        series = _weighted_merged_series(point_results, points)
+            query = urllib.parse.urlencode({
+                "parameters": parameter,
+                "community": "RE",
+                "longitude": point["lon"],
+                "latitude": point["lat"],
+                "start": f"{start_year}0101",
+                "end": f"{end_year}1231",
+                "format": "JSON",
+                "header": "true",
+                "time-standard": "UTC",
+            })
+            try:
+                with urllib.request.urlopen(
+                    f"https://power.larc.nasa.gov/api/temporal/daily/point?{query}", timeout=60
+                ) as response:
+                    payload_json = json.loads(response.read())
+                daily = payload_json.get("properties", {}).get("parameter", {}).get(parameter, {})
+                by_year = {}
+                for date, raw in daily.items():
+                    value = float(raw)
+                    if math.isfinite(value) and value > -999:
+                        by_year.setdefault(int(date[:4]), []).append(value)
+                point_results.append((point, {"raw_series": [
+                    {"year": year, "value": sum(values) / len(values)}
+                    for year, values in by_year.items()
+                    if len(values) >= 0.9 * (366 if year % 4 == 0 else 365)
+                ]}))
+            except Exception as error:
+                failures.append(str(error))
+        series = _weighted_merged_series(
+            [item for _, item in point_results], [point for point, _ in point_results]
+        )
+        stats = analyze_annual_series(series, expected_start_year=start_year, expected_end_year=end_year)
+        sample_count = len(point_results)
+        result = {**stats, "raw_series": [{"year": year, "value": value} for year, value in series],
+                  "failed_point_count": len(failures), "error": "; ".join(failures[:2]) or None}
+    elif variable == "sea_level":
+        point_results = []
+        failures = []
+        for point in points:
+            try:
+                point_results.append((point, analyze_sea_level(point["lat"], point["lon"], start_year, end_year)))
+            except Exception as error:
+                failures.append(str(error))
+        usable = [(point, item) for point, item in point_results if not item.get("model_output")]
+        series = _weighted_merged_series(
+            [item for _, item in usable], [point for point, _ in usable]
+        )
+        stats = analyze_annual_series(series, expected_start_year=start_year, expected_end_year=end_year)
+        sample_count = len(usable)
+        result = {**stats, "raw_series": [{"year": year, "value": value} for year, value in series],
+                  "failed_point_count": len(failures), "error": "; ".join(failures[:2]) or None}
+    else:
+        memory_sensitive = variable in {
+            "merra2_evaporation",
+            "gldas_root_moisture", "gldas_surface_runoff",
+        }
+        retry_counts = [count for count in (min(len(points), 16), 8, 4) if 0 < count <= len(points)] if memory_sensitive else [len(points)]
+        point_results = []
+        failures = []
+        for point_count in retry_counts:
+            point_results = []
+            failures = []
+            for point in points[:point_count]:
+                try:
+                    point_results.append((point, analyze_point(
+                        point["lat"], point["lon"], variable, start_year, end_year
+                    )))
+                except Exception as error:
+                    failures.append(str(error))
+            if not memory_sensitive or not any("memory limit exceeded" in item.lower() for item in failures):
+                break
+        series = _weighted_merged_series(
+            [item for _, item in point_results], [point for point, _ in point_results]
+        )
         stats = analyze_annual_series(
             series,
             expected_start_year=start_year,
             expected_end_year=end_year,
         )
-        sample_count = len(points)
+        sample_count = len(point_results)
         result = {**stats, "raw_series": [
             {"year": year, "value": value} for year, value in series
-        ]}
+        ], "failed_point_count": len(failures), "error": "; ".join(failures[:2]) or None}
     return {
-        "status": result.get("status", "ok"),
+        "status": "ERROR" if not result.get("raw_series") else "PARTIAL" if result.get("failed_point_count") else result.get("status", "OK"),
         "sample_count": sample_count,
         "observation_count": len(result.get("raw_series", [])),
         "sen_slope": stats.get("sen_slope"),
         "p_value": stats.get("p_value"),
         "test_status": stats.get("test_status"),
+        "failed_point_count": result.get("failed_point_count", 0),
+        "error": result.get("error"),
     }
 
 
@@ -316,7 +402,9 @@ def main():
     for region in REGIONS:
         geometry, boundary_source = geometries[region]
         for variable, (start_year, end_year) in VARIABLES.items():
-            if geometry is None:
+            if variable in {"temperature", "precipitation", "sea_level"} and geometry is None:
+                result = {"status": "ERROR", "seconds": None, "sample_count": 0, "error": boundary_source}
+            elif variable not in {"temperature", "precipitation", "sea_level"} and geometry is None:
                 result = {"status": "ERROR", "seconds": None, "sample_count": 0, "error": boundary_source}
             else:
                 print(

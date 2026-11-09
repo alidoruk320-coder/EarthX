@@ -23,7 +23,7 @@ import pymannkendall as mk
 
 VARIABLES = (
     "ndvi", "soil_moisture", "grace_tws", "gpm_precipitation",
-    "total_column_ozone", "merra2_t2m", "merra2_precipitable_water",
+    "total_column_ozone", "merra2_t2m",
     "merra2_evaporation", "gldas_root_moisture", "gldas_surface_runoff",
 )
 

@@ -118,19 +118,6 @@ export const ANALYSIS_VARIABLES = {
       tr: "MERRA-2 yeniden analizindeki 2 m hava sıcaklığı kelvinden çevrilir; tek uydu ölçümü değil, model ve veri asimilasyonu ürünüdür.",
     },
   },
-  "MERRA-2 Precipitable Water": {
-    source: "Google Earth Engine · NASA MERRA-2 reanalysis",
-    datasetId: "NASA/GSFC/MERRA/slv/2 · TQV",
-    unit: "kg/m² (annual mean)",
-    temporalResolution: "Hourly; annual mean",
-    startYear: 1980,
-    endYear: LAST_COMPLETE_YEAR,
-    sourceUrl: "https://developers.google.com/earth-engine/datasets/catalog/NASA_GSFC_MERRA_slv_2",
-    description: {
-      en: "MERRA-2 total-column precipitable water vapor; mass per unit area, not relative humidity.",
-      tr: "MERRA-2 toplam atmosferik çökelebilir su buharıdır; alan başına kütledir, bağıl nem değildir.",
-    },
-  },
   "MERRA-2 Evaporation Rate": {
     source: "Google Earth Engine · NASA MERRA-2 reanalysis",
     datasetId: "NASA/GSFC/MERRA/flx/2 · EVAP",

@@ -6,6 +6,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Union
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -51,7 +52,7 @@ def _build_region_params(lat: float, lon: float, radius_km: float) -> dict[str, 
     }
 
 
-def _fetch_gbif(params: dict[str, str | list[str]]) -> dict:
+def _fetch_gbif(params: Dict[str, Union[str, List[str]]]) -> dict:
     url = f"{GBIF_OCCURRENCE_URL}?{urlencode(params, doseq=True)}"
     request = Request(url, headers={"Accept": "application/json", "User-Agent": "TwinEarth/1.0"})
     with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:

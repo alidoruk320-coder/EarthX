@@ -1,10 +1,12 @@
 import copy
 import hashlib
 import json
+import logging
 import math
 import threading
 import time
 from collections import OrderedDict
+from typing import Optional
 
 import ee
 from ee.ee_exception import EEException
@@ -19,13 +21,54 @@ MAX_YEARS_PER_REGION_BATCH = 5
 MEMORY_LIMITED_REGION_VARIABLES = frozenset({
     "soil_moisture",
     "merra2_t2m",
-    "merra2_precipitable_water",
     "merra2_evaporation",
 })
 TARGET_REGION_PIXELS = 1_000_000
 MAX_GEOMETRY_SIMPLIFY_METERS = 1000
 _cache = OrderedDict()
 _cache_lock = threading.Lock()
+logger = logging.getLogger(__name__)
+
+
+def _is_ee_memory_error(error: Exception) -> bool:
+    return "memory limit exceeded" in str(error).lower()
+
+
+def _quick_point_attempt_sizes(point_count: int) -> list[int]:
+    """Return deterministic, descending sample sizes for memory retries."""
+    return list(dict.fromkeys(size for size in (min(point_count, 16), 8, 4) if 0 < size <= point_count)) or [point_count]
+
+
+def _quick_failure_result(variable: str, cfg: dict, geometry: dict, points: list[dict],
+                          start_year: int, end_year: int, started: float,
+                          failed_years: list[dict], attempted_point_counts: dict,
+                          source_image_count: Optional[int]) -> dict:
+    trend = analyze_annual_series([], expected_start_year=start_year, expected_end_year=end_year)
+    return {
+        "status": "insufficient_data",
+        "region": {"type": geometry["type"]},
+        "variable": variable,
+        "source": cfg.get("source") or "NASA data via Google Earth Engine",
+        "dataset_id": cfg["collection"],
+        "documentation_url": cfg.get("documentation_url"),
+        "unit": cfg["unit"],
+        "temporal_resolution": cfg.get("temporal_resolution"),
+        "aggregation_label": "monthly means, then annual mean",
+        "method": "sampled_boundary_filtered",
+        "sample_count": min(attempted_point_counts.values(), default=0),
+        "requested_sample_count": len(points),
+        "sample_count_by_year": attempted_point_counts,
+        "source_image_count": source_image_count,
+        "failed_years": failed_years,
+        "missing_years": list(range(start_year, end_year + 1)),
+        "valid_pixel_count": 0,
+        "valid_pixel_count_range": {"min": 0, "max": 0},
+        "low_coverage_years": [],
+        "raw_series": [],
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+        "cache_hit": False,
+        **trend,
+    }
 
 
 def polygonal_geometry(payload: dict) -> dict:
@@ -113,7 +156,7 @@ def _normalize_geometry(payload: dict) -> dict:
 
 
 def _cache_key(geometry: dict, variable: str, start_year: int, end_year: int,
-               method: str = "polygon_area_weighted", sample_points: list | None = None) -> str:
+               method: str = "polygon_area_weighted", sample_points: Optional[list] = None) -> str:
     encoded = json.dumps(
         {
             "geometry": geometry,
@@ -209,13 +252,8 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
 
         collection = collection.map(apply_quality_mask)
     collection = collection.select(cfg["band"])
-    native_projection = collection.first().select(cfg["band"]).projection()
-    empty_band = (
-        ee.Image.constant(0)
-        .rename(cfg["band"])
-        .updateMask(ee.Image.constant(0))
-        .setDefaultProjection(native_projection)
-    )
+    # Keep the empty fallback's type and projection identical to source data.
+    empty_band = collection.first().select(cfg["band"]).updateMask(ee.Image.constant(0))
     temporal_reducer = ee.Reducer.sum() if cfg["aggregate"] == "sum" else ee.Reducer.mean()
     monthly_first = cfg.get("monthly_first", False)
     tile_scale = 16
@@ -232,12 +270,21 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
                 month_start = ee.Date.fromYMD(year, month, 1)
                 month_end = month_start.advance(1, "month")
                 monthly_collection = annual_collection.filterDate(month_start, month_end)
-                monthly_images.append(monthly_collection.mean().rename(cfg["band"]))
+                monthly_image = ee.Algorithms.If(
+                    monthly_collection.size().eq(0),
+                    empty_band,
+                    monthly_collection.mean().rename(cfg["band"]),
+                )
+                monthly_images.append(monthly_image)
             annual = ee.ImageCollection.fromImages(monthly_images).mean()
         else:
-            annual = annual_collection.select(cfg["band"]).mean()
+            annual = ee.Algorithms.If(
+                annual_collection.size().eq(0),
+                empty_band,
+                annual_collection.select(cfg["band"]).mean().rename(cfg["band"]),
+            )
 
-        return annual.multiply(cfg["scale_factor"]).add(cfg.get("offset", 0))
+        return annual.rename(cfg["band"]).multiply(cfg["scale_factor"]).add(cfg.get("offset", 0))
 
     def annual_feature(year):
         year = ee.Number(year)
@@ -312,19 +359,40 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
         try:
             rows.extend(batch.getInfo()["features"])
         except EEException as error:
-            if (
-                "too many concurrent aggregations" not in str(error).lower()
-                or batch_start == batch_end
-            ):
+            message = str(error).lower()
+            if batch_start == batch_end and batch_size == 1 and "memory limit exceeded" in message:
+                rows.append({"properties": {
+                    "year": batch_start,
+                    "numerator": None,
+                    "denominator": None,
+                    "center_value": None,
+                    "valid_pixel_count": 0,
+                    "area_m2": area_m2,
+                    "year_error": str(error),
+                }})
+                logger.warning("Polygon annual request exceeded GEE memory: variable=%s year=%d", cfg.get("variable_id"), batch_start)
+                continue
+            if "too many concurrent aggregations" not in message or batch_start == batch_end:
                 raise
             for year in range(batch_start, batch_end + 1):
                 single_year = ee.FeatureCollection(
                     ee.List.sequence(year, year).map(annual_feature)
                 )
-                rows.extend(single_year.getInfo()["features"])
+                try:
+                    rows.extend(single_year.getInfo()["features"])
+                except EEException as single_error:
+                    if batch_size != 1 or "memory limit exceeded" not in str(single_error).lower():
+                        raise
+                    rows.append({"properties": {
+                        "year": year, "numerator": None, "denominator": None,
+                        "center_value": None, "valid_pixel_count": 0,
+                        "area_m2": area_m2, "year_error": str(single_error),
+                    }})
     if not small_polygon:
         for feature in rows:
             properties = feature.get("properties", {})
+            if properties.get("year_error"):
+                continue
             denominator = properties.get("denominator")
             if (
                 properties.get("numerator") is not None
@@ -371,9 +439,7 @@ def _fetch_server_month_features(geojson: dict, cfg: dict, start_year: int,
                 accepted = accepted.Or(qa.eq(value))
             return image.updateMask(accepted)
         collection = collection.map(apply_quality_mask)
-    projection = collection.first().select(cfg["band"]).projection()
-    empty = (ee.Image.constant(0).rename(cfg["band"])
-             .updateMask(ee.Image.constant(0)).setDefaultProjection(projection))
+    empty = collection.first().select(cfg["band"]).updateMask(ee.Image.constant(0))
     temporal_reducer = ee.Reducer.sum() if cfg["aggregate"] == "sum" else ee.Reducer.mean()
     reducer = ee.Reducer.mean().combine(reducer2=ee.Reducer.count(), sharedInputs=True) if cfg["equal_area"] else ee.Reducer.sum()
 
@@ -413,11 +479,17 @@ def _fetch_server_month_features(geojson: dict, cfg: dict, start_year: int,
     rows = []
     for batch_start in range(start_year, end_year + 1, batch_years):
         batch_end = min(end_year, batch_start + batch_years - 1)
-        years = ee.List.sequence(batch_start, batch_end)
-        nested = years.map(lambda year: ee.FeatureCollection(
-            ee.List.sequence(1, 12).map(lambda month: month_feature(year, month))
-        ).flatten())
-        rows.extend(ee.FeatureCollection(nested).flatten().getInfo()["features"])
+        # Keep the result as nested Lists until both list levels are flattened.
+        # Wrapping the inner monthly Features in FeatureCollections and then
+        # flattening an outer FeatureCollection makes Earth Engine interpret
+        # individual Features as collections for a one-year block.
+        nested_features = ee.List.sequence(batch_start, batch_end).map(
+            lambda year: ee.List.sequence(1, 12).map(
+                lambda month: month_feature(year, month)
+            )
+        )
+        flat_features = ee.List(nested_features).flatten().flatten()
+        rows.extend(ee.FeatureCollection(flat_features).getInfo()["features"])
     return rows
 
 
@@ -461,11 +533,11 @@ def _annualize_month_features(month_features: list, cfg: dict, start_year: int, 
     return annual_features, missing_months
 
 
-def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict],
-                               start_year: int, end_year: int) -> dict:
-    """Memory-bounded MERRA-2 regional estimate at up to sixteen interior points."""
+def analyze_sampled_merra2_region(geometry_payload: dict, sample_points: list[dict],
+                                  start_year: int, end_year: int,
+                                  variable: str = "merra2_t2m") -> dict:
+    """Memory-bounded MERRA-2 estimate at interior points, one year at a time."""
     started = time.perf_counter()
-    variable = "merra2_t2m"
     cfg = copy.deepcopy(region_config[variable])
     if not sample_points or len(sample_points) > 16:
         raise ValueError("MERRA-2 quick mode needs between 1 and 16 boundary-filtered sample points")
@@ -507,16 +579,13 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
         collection = (
             ee.ImageCollection(cfg["collection"])
             .filterBounds(sample_area)
+            .filterDate(f"{start_year}-01-01", f"{end_year + 1}-01-01")
             .select(cfg["band"])
         )
         projection = collection.first().select(cfg["band"]).projection()
-        empty = (
-            ee.Image.constant(0).rename(cfg["band"])
-            .updateMask(ee.Image.constant(0))
-            .setDefaultProjection(projection)
-        )
+        empty = collection.first().select(cfg["band"]).updateMask(ee.Image.constant(0))
 
-        def annual_samples(year):
+        def annual_samples(year, sample_collection=ee_points):
             year = ee.Number(year)
             monthly_images = []
             for month in range(1, 13):
@@ -528,7 +597,7 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
             annual = ee.ImageCollection.fromImages(monthly_images).mean()
             annual = annual.multiply(cfg["scale_factor"]).add(cfg["offset"])
             samples = annual.sampleRegions(
-                collection=ee_points,
+                collection=sample_collection,
                 properties=["sample_id", "area_weight"],
                 scale=cfg["scale"],
                 tileScale=16,
@@ -541,15 +610,46 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
                 "area_weight": feature.get("area_weight"),
             }))
 
+        logger.warning(
+            "MERRA-2 quick request plan: variable=%s points=%d years=%d request_scope=one_year monthly_composites_per_year=12",
+            variable, len(points), end_year - start_year + 1,
+        )
         features = []
-        # A short batch prevents the hourly, global MERRA collection from
-        # exhausting Earth Engine's user-memory quota in one long request.
-        for batch_start in range(start_year, end_year + 1):
-            batch_end = batch_start
-            nested = ee.FeatureCollection(
-                ee.List.sequence(batch_start, batch_end).map(annual_samples)
-            ).flatten()
-            features.extend(nested.getInfo()["features"])
+        failed_years = []
+        attempted_point_counts = {}
+        request_count = 0
+        for year_value in range(start_year, end_year + 1):
+            succeeded = False
+            last_error = None
+            for point_limit in _quick_point_attempt_sizes(len(points)):
+                selected_points = points[:point_limit]
+                selected_ee_points = ee.FeatureCollection([
+                    ee.Feature(
+                        ee.Geometry.Point([point["lon"], point["lat"]]),
+                        {"sample_id": index, "area_weight": point["weight"]},
+                    )
+                    for index, point in enumerate(selected_points)
+                ])
+                try:
+                    # One annual reduction per request bounds the MERRA graph.
+                    request_count += 1
+                    nested = ee.FeatureCollection(
+                        ee.List.sequence(year_value, year_value).map(
+                            lambda year: annual_samples(year, selected_ee_points)
+                        )
+                    ).flatten()
+                    features.extend(nested.getInfo()["features"])
+                    attempted_point_counts[year_value] = point_limit
+                    succeeded = True
+                    break
+                except Exception as error:
+                    last_error = error
+                    if not _is_ee_memory_error(error):
+                        break
+                    logger.warning("MERRA-2 quick memory limit: variable=%s year=%d points=%d; retrying smaller sample", variable, year_value, point_limit)
+            if not succeeded and last_error is not None:
+                failed_years.append({"year": year_value, "error": str(last_error)})
+                logger.error("MERRA-2 quick annual request failed: variable=%s year=%d error=%s", variable, year_value, last_error)
     except Exception as error:
         raise RuntimeError(f"MERRA-2 regional sample analysis failed: {error}") from error
 
@@ -581,7 +681,17 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
         if values["weight_sum"] > 0
     ]
     if not series:
-        raise ValueError("MERRA-2 returned no valid temperature samples inside this boundary")
+        if failed_years:
+            failure_result = _quick_failure_result(
+                variable, cfg, geometry, points, start_year, end_year, started,
+                failed_years, attempted_point_counts, None,
+            )
+            failure_result.update({
+                "retrieval_method": "monthly_means_sequential_single_year_requests",
+                "earth_engine_request_count": request_count,
+            })
+            return failure_result
+        raise ValueError(f"MERRA-2 {variable} returned no valid samples inside this boundary")
 
     missing_years = sorted(set(range(start_year, end_year + 1)) - {point["year"] for point in series})
     trend = analyze_annual_series(
@@ -597,10 +707,16 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
         "dataset_id": cfg["collection"],
         "documentation_url": cfg.get("documentation_url"),
         "unit": cfg["unit"],
-        "temporal_resolution": "Hourly; monthly mean then annual mean",
+        "temporal_resolution": f"{cfg.get('temporal_resolution', 'Hourly')}; monthly mean then annual mean",
         "aggregation_label": "monthly means, then annual mean",
         "method": "sampled_boundary_filtered",
-        "sample_count": len(points),
+        "sample_count": min(attempted_point_counts.values(), default=len(points)),
+        "requested_sample_count": len(points),
+        "sample_count_by_year": attempted_point_counts,
+        "source_image_count": None,
+        "retrieval_method": "monthly_means_sequential_single_year_requests",
+        "earth_engine_request_count": request_count,
+        "failed_years": failed_years,
         "valid_pixel_count": min(counts),
         "valid_pixel_count_range": {"min": min(counts), "max": max(counts)},
         "low_coverage_years": [point["year"] for point in series if point["low_coverage"]],
@@ -614,6 +730,8 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
         result["missing_year_warning"] = (
             "Missing annual observations were excluded; Mann–Kendall significance is withheld for a gapped series."
         )
+    if failed_years:
+        result["failed_year_warning"] = "Some annual Earth Engine requests failed; remaining valid years were retained."
     if len(series) < 15:
         result["short_series_warning"] = (
             "Fewer than 15 annual observations are available; a longer record may be needed to detect a trend reliably."
@@ -622,10 +740,19 @@ def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict]
     return result
 
 
+def analyze_sampled_merra2_t2m(geometry_payload: dict, sample_points: list[dict],
+                               start_year: int, end_year: int) -> dict:
+    """Backward-compatible wrapper for the existing T2M route."""
+    return analyze_sampled_merra2_region(
+        geometry_payload, sample_points, start_year, end_year, "merra2_t2m",
+    )
+
+
 def _build_result(features: list, geometry: dict, variable: str, cfg: dict,
                   start_year: int, end_year: int, elapsed_seconds: float) -> dict:
     rows_by_year = {}
     fallback_used = False
+    failed_years = []
     nominal_cell_area = float(
         cfg.get("nominal_cell_area_m2", cfg.get("native_scale_meters", cfg["scale"]) ** 2)
     )
@@ -635,6 +762,8 @@ def _build_result(features: list, geometry: dict, variable: str, cfg: dict,
         if props.get("year") is None:
             continue
         year = int(props["year"])
+        if props.get("year_error"):
+            failed_years.append({"year": year, "error": props["year_error"]})
         numerator = props.get("numerator")
         denominator = props.get("denominator")
         center_value = props.get("center_value")
@@ -713,6 +842,7 @@ def _build_result(features: list, geometry: dict, variable: str, cfg: dict,
         "low_coverage_years": [point["year"] for point in series if point["low_coverage"]],
         "raw_series": series,
         "missing_years": missing_years,
+        "failed_years": failed_years,
         "elapsed_seconds": round(elapsed_seconds, 3),
         **trend,
         "message": (
@@ -748,7 +878,7 @@ def analyze_region(geometry_payload: dict, variable: str, start_year: int, end_y
     if aggregation_mode not in {"annual", "monthly_server_batch"}:
         raise ValueError("aggregation_mode must be annual or monthly_server_batch")
     if aggregation_mode == "monthly_server_batch" and variable not in MEMORY_LIMITED_REGION_VARIABLES:
-        raise ValueError("monthly_server_batch is supported only for SMAP and the three MERRA-2 variables")
+        raise ValueError("monthly_server_batch is supported only for SMAP and the enabled MERRA-2 variables")
     if not 1 <= int(batch_years) <= 26:
         raise ValueError("batch_years must be between 1 and 26")
 
@@ -813,8 +943,14 @@ def analyze_region(geometry_payload: dict, variable: str, start_year: int, end_y
 
 
 def _fetch_smap_sample_features(sample_points: list[dict], cfg: dict,
-                                start_year: int, end_year: int) -> list:
-    """Fetch SMAP samples year-by-year to bound Earth Engine's working memory."""
+                                start_year: int, end_year: int) -> tuple:
+    """Fetch monthly composites for all years in one compact EE response.
+
+    The source is 3-hourly. Exporting those source observations with getRegion
+    creates a very large response/graph, so reduce each month on Earth Engine
+    and return only one value per month and sample point. Memory failures retry
+    the whole request with fewer points, strictly sequentially.
+    """
     ee_points = ee.FeatureCollection([
         ee.Feature(
             ee.Geometry.Point([point["lon"], point["lat"]]),
@@ -829,6 +965,10 @@ def _fetch_smap_sample_features(sample_points: list[dict], cfg: dict,
     collection = (
         ee.ImageCollection(cfg["collection"])
         .filterBounds(sample_area)
+        .filterDate(f"{start_year}-01-01", f"{end_year + 1}-01-01")
+    )
+    collection = collection.map(
+        lambda image: image.select([cfg["band"]]).cast({cfg["band"]: "float"}).rename(cfg["band"])
     )
     if cfg.get("mask"):
         quality_band = cfg["mask"]["band"]
@@ -843,158 +983,110 @@ def _fetch_smap_sample_features(sample_points: list[dict], cfg: dict,
 
         collection = collection.map(apply_quality_mask)
     collection = collection.select(cfg["band"])
-    reducer = ee.Reducer.sum() if cfg["aggregate"] == "sum" else ee.Reducer.mean()
     projection = collection.first().select(cfg["band"]).projection()
-    empty_band = (
-        ee.Image.constant(0).rename(cfg["band"])
-        .updateMask(ee.Image.constant(0))
-        .setDefaultProjection(projection)
+    # A masked source image preserves the exact source band type and projection
+    # for months with no observations (a masked constant can cause type errors).
+    empty_band = collection.first().select(cfg["band"]).updateMask(ee.Image.constant(0))
+    year_count = end_year - start_year + 1
+    month_count = year_count * 12
+    logger.warning(
+        "SMAP quick request plan: points=%d years=%d monthly_composites=%d annual_outputs=%d source_cadence=3-hourly",
+        len(sample_points), year_count, month_count, year_count,
     )
+    year_offsets = ee.List.sequence(0, year_count - 1)
 
-    features = []
-    for year_value in range(start_year, end_year + 1):
-        year = ee.Number(year_value)
-        year_start = ee.Date.fromYMD(year, 1, 1)
-        year_end = year_start.advance(1, "year")
-        year_collection = collection.filterDate(year_start, year_end)
-        monthly_images = []
-        for month_value in range(1, 13):
-            month = ee.Number(month_value)
-            month_start = ee.Date.fromYMD(year, month, 1)
-            month_end = month_start.advance(1, "month")
-            month_collection = year_collection.filterDate(month_start, month_end)
+    def make_annual(year_offset):
+        year = ee.Number(start_year).add(year_offset)
+
+        def make_month(month_number):
+            month_start = ee.Date.fromYMD(year, month_number, 1)
+            month_collection = collection.filterDate(month_start, month_start.advance(1, "month"))
             month_collection = month_collection.merge(ee.ImageCollection.fromImages([empty_band]))
-            monthly_images.append(month_collection.reduce(reducer).rename(cfg["band"]))
+            return month_collection.mean().rename(cfg["band"])
 
-        annual = (
-            ee.ImageCollection.fromImages(monthly_images)
-            .mean()
-            .multiply(cfg["scale_factor"])
-            .add(cfg.get("offset", 0))
-        )
-        sampled = annual.sampleRegions(
-            collection=ee_points,
-            properties=["sample_id", "area_weight"],
-            scale=cfg["scale"],
-            tileScale=16,
-            geometries=False,
-        )
-        annual_rows = sampled.map(lambda feature: ee.Feature(None, {
-            "year": year,
-            "value": feature.get(cfg["band"]),
-            "sample_id": feature.get("sample_id"),
-            "area_weight": feature.get("area_weight"),
-        }))
-        # One bounded request per annual image keeps SMAP tile reductions from
-        # constructing an 11-year × 12-month graph in one user-memory context.
-        features.extend(ee.FeatureCollection(annual_rows).getInfo()["features"])
-    return features
+        monthly_images = ee.List.sequence(1, 12).map(make_month)
+        annual = ee.ImageCollection.fromImages(monthly_images).mean()
+        annual = annual.multiply(cfg["scale_factor"]).add(cfg.get("offset", 0))
+        return annual.set({"year": year})
+
+    annual_images = year_offsets.map(make_annual)
+    annual_collection = ee.ImageCollection.fromImages(annual_images)
+    failed_years = []
+    attempted_point_counts = {}
+    last_error = None
+    request_count = 0
+    for point_limit in _quick_point_attempt_sizes(len(sample_points)):
+        selected_points = sample_points[:point_limit]
+        selected_ee_points = ee.FeatureCollection([
+            ee.Feature(
+                ee.Geometry.Point([point["lon"], point["lat"]]),
+                {"sample_id": index, "area_weight": point["weight"]},
+            )
+            for index, point in enumerate(selected_points)
+        ])
+
+        def sample_year(image):
+            image = ee.Image(image)
+            sampled = image.sampleRegions(
+                collection=selected_ee_points,
+                properties=["sample_id", "area_weight"],
+                scale=cfg["scale"],
+                projection=projection,
+                tileScale=16,
+                geometries=False,
+            )
+            return sampled.map(lambda feature: ee.Feature(None, {
+                "year": image.get("year"),
+                "value": feature.get(cfg["band"]),
+                "sample_id": feature.get("sample_id"),
+                "area_weight": feature.get("area_weight"),
+            }))
+
+        request_count += 1
+        try:
+            response = ee.FeatureCollection(annual_collection.toList(year_count).map(sample_year)).flatten().getInfo()
+            annual_rows = []
+            for feature in response.get("features", []):
+                props = feature.get("properties", {})
+                try:
+                    year = int(props["year"])
+                    sample_id = int(props["sample_id"])
+                    value = float(props["value"])
+                    if not math.isfinite(value):
+                        continue
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                annual_rows.append({"properties": {
+                    "year": year,
+                    "value": value,
+                    "sample_id": sample_id,
+                    "area_weight": props.get("area_weight"),
+                }})
+            attempted_point_counts = {year: point_limit for year in range(start_year, end_year + 1)}
+            return annual_rows, failed_years, attempted_point_counts, None, request_count
+        except Exception as error:
+            last_error = error
+            if not _is_ee_memory_error(error):
+                break
+            logger.warning(
+                "SMAP quick memory limit: years=%d-%d points=%d; retrying smaller sample",
+                start_year, end_year, point_limit,
+            )
+
+    failed_years = [{"year": year, "error": str(last_error or "SMAP request failed")}
+                    for year in range(start_year, end_year + 1)]
+    logger.error("SMAP quick request failed: years=%d-%d error=%s", start_year, end_year, last_error)
+    return [], failed_years, attempted_point_counts, None, request_count
 
 
 def analyze_sampled_soil_moisture(geometry_payload: dict, sample_points: list[dict],
                                   start_year: int, end_year: int) -> dict:
-    """Fast, boundary-filtered SMAP estimate without one full series request per point."""
-    started = time.perf_counter()
-    variable = "soil_moisture"
-    cfg = copy.deepcopy(region_config[variable])
-    if not sample_points or len(sample_points) > 16:
-        raise ValueError("SMAP quick mode needs between 1 and 16 boundary-filtered sample points")
-    if start_year < cfg["start_year"] or end_year > cfg["latest_complete_year"] or end_year < start_year:
-        raise ValueError(
-            f"SMAP annual data is available from {cfg['start_year']} through {cfg['latest_complete_year']}"
-        )
-    points = []
-    for point in sample_points:
-        lat, lon = float(point["lat"]), float(point["lon"])
-        if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
-            raise ValueError("Invalid SMAP sample coordinate")
-        weight = float(point.get("weight", math.cos(math.radians(lat))))
-        points.append({"lat": lat, "lon": lon, "weight": max(0.0, weight)})
+    """SMAP soil-moisture quick region mode is intentionally disabled.
 
-    geometry = _normalize_geometry(geometry_payload)
-    key = _cache_key(
-        geometry,
-        variable,
-        start_year,
-        end_year,
-        method="sampled_boundary_filtered",
-        sample_points=points,
+    GEE data for NASA/SMAP/SPL4SMGP/008 is too memory-sensitive for sampled
+    regional aggregation across multi-year windows; point analysis and a short,
+    small-area polygon request are the only stable options.
+    """
+    raise ValueError(
+        "SMAP soil moisture sampled region mode is disabled because Google Earth Engine exceeds the user memory limit for multi-year regional requests. Use a single point analysis or a much smaller/shorter polygon request."
     )
-    cached = _cache_get(key)
-    if cached is not None:
-        cached["cache_hit"] = True
-        cached["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-        return cached
-
-    try:
-        features = _fetch_smap_sample_features(points, cfg, start_year, end_year)
-    except Exception as error:
-        raise RuntimeError(f"SMAP quick regional analysis failed: {error}") from error
-
-    by_year = {}
-    for feature in features:
-        props = feature.get("properties", {})
-        try:
-            year = int(props["year"])
-            value = float(props["value"])
-            weight = float(props.get("area_weight") or 0)
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not (math.isfinite(value) and math.isfinite(weight) and weight > 0):
-            continue
-        accumulator = by_year.setdefault(year, {"weighted_sum": 0.0, "weight_sum": 0.0, "count": 0})
-        accumulator["weighted_sum"] += value * weight
-        accumulator["weight_sum"] += weight
-        accumulator["count"] += 1
-
-    series = []
-    for year, values in sorted(by_year.items()):
-        if values["weight_sum"] <= 0:
-            continue
-        series.append({
-            "date": f"{year}-01-01",
-            "year": year,
-            "value": round(values["weighted_sum"] / values["weight_sum"], 6),
-            "valid_pixel_count": values["count"],
-            "low_coverage": values["count"] < LOW_COVERAGE_PIXEL_THRESHOLD,
-        })
-    if not series:
-        raise ValueError("SMAP has no valid land observations at the supplied boundary sample points")
-
-    missing_years = sorted(set(range(start_year, end_year + 1)) - {point["year"] for point in series})
-    trend = analyze_annual_series(
-        [(point["year"], point["value"]) for point in series],
-        expected_start_year=start_year,
-        expected_end_year=end_year,
-    )
-    counts = [point["valid_pixel_count"] for point in series]
-    result = {
-        "region": {"type": geometry["type"]},
-        "variable": variable,
-        "source": cfg.get("source") or "NASA SMAP L4 via Google Earth Engine",
-        "dataset_id": cfg["collection"],
-        "documentation_url": cfg.get("documentation_url"),
-        "unit": cfg["unit"],
-        "temporal_resolution": "3-hourly; monthly mean then annual mean",
-        "aggregation_label": "monthly means, then annual mean",
-        "method": "sampled_boundary_filtered",
-        "sample_count": len(points),
-        "valid_pixel_count": min(counts),
-        "valid_pixel_count_range": {"min": min(counts), "max": max(counts)},
-        "low_coverage_years": [point["year"] for point in series if point["low_coverage"]],
-        "missing_years": missing_years,
-        "raw_series": series,
-        "elapsed_seconds": round(time.perf_counter() - started, 3),
-        "cache_hit": False,
-        **trend,
-    }
-    if missing_years:
-        result["missing_year_warning"] = (
-            "Missing annual observations were excluded; Mann–Kendall significance is withheld for a gapped series."
-        )
-    if len(series) < 15:
-        result["short_series_warning"] = (
-            "Fewer than 15 annual observations are available; a longer record may be needed to detect a trend reliably."
-        )
-    _cache_set(key, result)
-    return result

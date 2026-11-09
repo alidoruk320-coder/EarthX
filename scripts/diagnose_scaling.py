@@ -14,7 +14,7 @@ from app.services.gee_client import init_gee, is_gee_initialized
 from app.services.region_analysis import ee, polygonal_geometry
 
 LIMIT_MS = 300_000
-VARIABLES = ("soil_moisture", "merra2_t2m", "merra2_precipitable_water", "merra2_evaporation")
+VARIABLES = ("soil_moisture", "merra2_t2m", "merra2_evaporation")
 
 
 def initialize():
