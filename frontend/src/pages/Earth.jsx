@@ -682,17 +682,12 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         unit = ANALYSIS_VARIABLES[variable]?.unit || NASA_POWER_SERIES[variable]?.unit;
         const seriesStartYear = series.length ? Math.min(...series.map((point) => point.year)) : dataStartYear;
         const seriesEndYear = series.length ? Math.max(...series.map((point) => point.year)) : completeDataEndYear;
-        // Do not recompute a gapped server series over min(year)..max(year):
-        // that would silently treat missing interior years as consecutive.
-        const hasFailedYears = Array.isArray(result.failed_years) && result.failed_years.length > 0;
-        const calculated = !hasFailedYears && series.length >= 8
+        const calculated = series.length >= 8
           ? await analyzeSeries(series, variable, unit, datasetId, seriesStartYear, seriesEndYear)
           : null;
-        stats = hasFailedYears
-          ? mapAnalysisStats(result)
-          : calculated
-            ? mapAnalysisStats(calculated)
-            : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
+        stats = calculated
+          ? mapAnalysisStats(calculated)
+          : { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false, testStatus: "insufficient_data" };
       } else if (GEE_BACKED_LABELS.includes(variable)) {
         let failedPointCount = 0;
         let successfulSamplePoints = regionSamplePoints;
