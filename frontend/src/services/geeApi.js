@@ -9,7 +9,6 @@ export const LABEL_TO_ID = {
   "GPM Precipitation Rate": "gpm_precipitation",
   "Total Column Ozone": "total_column_ozone",
   "MERRA-2 Air Temperature": "merra2_t2m",
-  "MERRA-2 Evaporation Rate": "merra2_evaporation",
   "GLDAS Root-Zone Soil Moisture": "gldas_root_moisture",
   "GLDAS Surface Runoff": "gldas_surface_runoff",
 };
@@ -20,13 +19,16 @@ export const GEE_BACKED_LABELS = [
   "GRACE Total Water Storage Anomaly",
   "GPM Precipitation Rate",
   "Total Column Ozone",
-  "MERRA-2 Air Temperature",
-  "MERRA-2 Evaporation Rate",
   "GLDAS Root-Zone Soil Moisture",
   "GLDAS Surface Runoff",
 ];
 
-export const NASA_POWER_LABELS = ["Temperature", "Precipitation"];
+export const NASA_POWER_LABELS = [
+  "Temperature",
+  "Precipitation",
+  "MERRA-2 Air Temperature",
+  "MERRA-2 Evapotranspiration Energy Flux",
+];
 
 async function request(path, options) {
   const { timeoutMs, timeoutMessage, ...fetchOptions } = options || {};

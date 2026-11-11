@@ -5,7 +5,7 @@ import AnalysisPanel from "../components/AnalysisPanel";
 import YearSlider from "../components/YearSlider";
 import { getNasaPowerSeries, NASA_POWER_SERIES } from "../nasa/power";
 import { resolvePlaceBoundary } from "../api/geocoder";
-import { analyzePointGEE, analyzeRegionGEE, analyzeSampledRegionGEE, analyzeSampledSoilMoistureRegion, analyzeSeaLevel, analyzeSeries, getCascadeCorrelation, getChangeTileUrl, getImpactExposure, getSeaLevelAvailability, GEE_BACKED_LABELS, NASA_POWER_LABELS, LABEL_TO_ID } from "../services/geeApi";
+import { analyzePointGEE, analyzeRegionGEE, analyzeSampledSoilMoistureRegion, analyzeSeaLevel, analyzeSeries, getCascadeCorrelation, getChangeTileUrl, getImpactExposure, getSeaLevelAvailability, GEE_BACKED_LABELS, NASA_POWER_LABELS, LABEL_TO_ID } from "../services/geeApi";
 import { fetchGibsCatalog, GIBS_GALLERY_KEYS, GIBS_LAYERS, registerGibsLayer } from "../nasa/earthdata";
 import { getBiodiversityContext } from "../services/biodiversity";
 import { ANALYSIS_VARIABLES, ANALYSIS_VARIABLE_LABELS, getAnalysisPeriod, normalizeAnalysisRange } from "../data/analysisVariables";
@@ -135,7 +135,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     "GPM Precipitation Rate": "GPM Yağış Hızı",
     "Total Column Ozone": "Toplam Sütun Ozonu",
     "MERRA-2 Air Temperature": "MERRA-2 Hava Sıcaklığı",
-    "MERRA-2 Evaporation Rate": "MERRA-2 Buharlaşma Hızı",
+    "MERRA-2 Evapotranspiration Energy Flux": "MERRA-2 Evapotranspirasyon Enerji Akısı",
     "GLDAS Root-Zone Soil Moisture": "GLDAS Kök Bölgesi Toprak Nemi",
     "GLDAS Surface Runoff": "GLDAS Yüzey Akışı",
     "Sea Level": "Deniz Seviyesi",
@@ -564,9 +564,17 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         regionSamplePoints.length > 0
         || (requestedRegionMode === "polygon_area_weighted" && effectivePlace?.geojson && GEE_BACKED_LABELS.includes(variable))
       ));
+      if (regionBounds && effectivePlace?.geojson
+        && NASA_POWER_LABELS.includes(variable)
+        && regionSamplePoints.length === 0) {
+        throw new Error(isTurkish
+          ? "Seçilen sınır içinde NASA POWER bölge tahmini için örnek nokta üretilemedi. Tek nokta analizi veya daha büyük bir bölge seçin."
+          : "No NASA POWER sample point could be generated inside this boundary. Use point analysis or select a larger region.");
+      }
       const polygonMode = regionMode
         && requestedRegionMode === "polygon_area_weighted"
         && GEE_BACKED_LABELS.includes(variable)
+        && !NASA_POWER_LABELS.includes(variable)
         && Boolean(effectivePlace?.geojson);
       if (regionBounds && effectivePlace?.geojson && requestedRegionMode === "sampled_boundary_filtered"
         && regionSamplePoints.length === 0) {
@@ -648,38 +656,51 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         datasetId = regionResponse.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
         unit = regionResponse.unit || ANALYSIS_VARIABLES[variable]?.unit;
         stats = mapAnalysisStats(regionResponse);
-      } else if (regionMode && [
-        "MERRA-2 Air Temperature",
-        "MERRA-2 Evaporation Rate",
-      ].includes(variable)) {
-        regionResponse = await analyzeSampledRegionGEE(
-          place.geojson,
-          variable,
-          regionSamplePoints,
-          dataStartYear,
-          completeDataEndYear,
-        );
-        series = (regionResponse.raw_series || []).map((point) => ({
-          year: Number(point.year),
-          value: Number(point.value),
-        }));
-        source = regionResponse.source || ANALYSIS_VARIABLES[variable]?.source || "Google Earth Engine";
-        datasetId = regionResponse.dataset_id || ANALYSIS_VARIABLES[variable]?.datasetId;
-        unit = regionResponse.unit || ANALYSIS_VARIABLES[variable]?.unit;
-        stats = mapAnalysisStats(regionResponse);
       } else if (NASA_POWER_LABELS.includes(variable)) {
-        let pointSeries;
+        const definition = NASA_POWER_SERIES[variable];
+        const dataset = ANALYSIS_VARIABLES[variable];
+        let failedPointCount = 0;
         if (regionMode) {
-          pointSeries = await Promise.all(
+          const settled = await Promise.allSettled(
             regionSamplePoints.map((point) => getNasaPowerSeries(point.lat, point.lon, variable, dataStartYear, completeDataEndYear))
           );
-          series = mergeSeriesForRegion(pointSeries, regionSamplePoints);
+          const validSamples = settled.flatMap((entry, index) => entry.status === "fulfilled" && entry.value.length
+            ? [{ series: entry.value, point: regionSamplePoints[index] }]
+            : []);
+          failedPointCount = settled.length - validSamples.length;
+          if (!validSamples.length) {
+            const firstFailure = settled.find((entry) => entry.status === "rejected")?.reason;
+            throw firstFailure || new Error("NASA POWER returned no annual data for the sampled region");
+          }
+          const successfulPoints = validSamples.map((sample) => sample.point);
+          series = mergeSeriesForRegion(
+            validSamples.map((sample) => sample.series),
+            successfulPoints,
+          );
+          regionResponse = {
+            method: "sampled_boundary_filtered",
+            sample_count: validSamples.length,
+            requested_sample_count: regionSamplePoints.length,
+            failed_sample_count: failedPointCount,
+            source: dataset?.source || "NASA POWER",
+            dataset_id: definition?.datasetId,
+            unit: definition?.unit,
+            temporal_resolution: dataset?.temporalResolution,
+            aggregation_label: "annual mean",
+          };
+          if (failedPointCount) {
+            sourceWarning = isTurkish
+              ? `${failedPointCount} örnek noktada NASA POWER verisi alınamadı; kalan ${validSamples.length} nokta kullanıldı.`
+              : `NASA POWER data was unavailable for ${failedPointCount} sample points; the remaining ${validSamples.length} points were used.`;
+          }
         } else {
           series = await getNasaPowerSeries(Number(lat), Number(lon), variable, dataStartYear, completeDataEndYear);
         }
-        source = ANALYSIS_VARIABLES[variable]?.source || "NASA POWER";
-        datasetId = ANALYSIS_VARIABLES[variable]?.datasetId || `NASA POWER daily parameter ${NASA_POWER_SERIES[variable]?.parameter || "unknown"}`;
-        unit = ANALYSIS_VARIABLES[variable]?.unit || NASA_POWER_SERIES[variable]?.unit;
+        source = dataset?.source || "NASA POWER";
+        datasetId = dataset?.datasetId || definition?.datasetId || `NASA POWER parameter ${definition?.parameter || "unknown"}`;
+        datasetDocUrl = dataset?.sourceUrl;
+        temporalResolution = dataset?.temporalResolution;
+        unit = dataset?.unit || definition?.unit;
         const seriesStartYear = series.length ? Math.min(...series.map((point) => point.year)) : dataStartYear;
         const seriesEndYear = series.length ? Math.max(...series.map((point) => point.year)) : completeDataEndYear;
         const calculated = series.length >= 8
@@ -693,7 +714,6 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         let successfulSamplePoints = regionSamplePoints;
         if (regionMode) {
           const memorySensitiveQuickVariables = [
-            "MERRA-2 Evaporation Rate",
             "GLDAS Root-Zone Soil Moisture",
             "GLDAS Surface Runoff",
           ];
@@ -958,7 +978,11 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         datasetDocUrl: ANALYSIS_VARIABLES[variable]?.sourceUrl,
         unit: null,
         source: ANALYSIS_VARIABLES[variable]?.source || (variable === "Sea Level" ? "NASA sea-level data source" : "NASA data source"),
-        errorMessage: error.code === "ANALYSIS_TIMEOUT"
+        errorMessage: error.code === "NASA_POWER_TIMEOUT"
+          ? (isTurkish
+            ? "NASA POWER veri isteği 45 saniye içinde tamamlanamadı. Daha kısa dönem veya farklı bir bölge deneyin."
+            : "NASA POWER data did not finish within 45 seconds. Try a shorter period or another region.")
+          : error.code === "ANALYSIS_TIMEOUT"
           ? (isTurkish
             ? "Analiz 3 dakika içinde tamamlanamadı. Daha kısa dönem veya farklı bölge deneyin."
             : "Analysis did not finish within 3 minutes. Try a shorter period or another region.")
@@ -1519,7 +1543,11 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
           );
         }}
         regionModeAvailable={Boolean(selectedPlace?.geojson && getRegionBounds(selectedPlace))}
-        canUsePolygonMode={Boolean(selectedPlace?.geojson && GEE_BACKED_LABELS.includes(selectedVariable))}
+        canUsePolygonMode={Boolean(
+          selectedPlace?.geojson
+          && GEE_BACKED_LABELS.includes(selectedVariable)
+          && !NASA_POWER_LABELS.includes(selectedVariable)
+        )}
       />
 
       {analysisLoading && <div className="analysisLoading">

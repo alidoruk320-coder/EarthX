@@ -211,9 +211,10 @@ export default function GlobalStory({ language = "en", onBack }) {
         ? getNasaPowerSeries(site.lat, site.lon, variable, analysisStartYear, sourceEndYear)
           .then(async (observations) => {
             const source = NASA_POWER_SERIES[variable];
-            const datasetId = `NASA POWER daily parameter ${source.parameter}`;
+            const product = ANALYSIS_VARIABLES[variable];
+            const datasetId = product?.datasetId || source.datasetId || `NASA POWER daily parameter ${source.parameter}`;
             const calculated = observations.length >= 8
-              ? await analyzeSeries(observations, variable, source.unit, datasetId, analysisStartYear, sourceEndYear)
+              ? await analyzeSeries(observations, variable, product?.unit || source.unit, datasetId, analysisStartYear, sourceEndYear)
               : null;
             return {
               raw_series: observations,
@@ -223,9 +224,9 @@ export default function GlobalStory({ language = "en", onBack }) {
               p_value: calculated?.p_value ?? null,
               significant: calculated?.significant ?? false,
               message: calculated?.message || "At least 8 annual observations are required.",
-              unit: source.unit,
+              unit: product?.unit || source.unit,
               dataset_id: datasetId,
-              source: "NASA POWER",
+              source: product?.source || "NASA POWER",
             };
           })
       : GEE_BACKED_LABELS.includes(variable)

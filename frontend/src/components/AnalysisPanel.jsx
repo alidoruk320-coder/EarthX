@@ -162,7 +162,7 @@ export default function AnalysisPanel({
       ? [`${previous.year}–${point.year}`]
       : [];
   });
-  const supportedSource = source === "NASA POWER"
+  const supportedSource = source?.startsWith("NASA POWER")
     || source?.includes("Google Earth Engine")
     || source === "NOAA CoastWatch blended satellite altimetry"
     || source === "NASA/JPL Sea Level Change Portal";
@@ -512,7 +512,7 @@ export default function AnalysisPanel({
         <small>{isTurkish ? "Harita zaman kaydırıcısı yalnızca görüntü yılını değiştirir." : "The map timeline changes imagery year only."}</small>
       </div>}
       {regionAnalysisMode === "polygon_area_weighted" && canUsePolygonMode
-        && ["Soil Moisture", "MERRA-2 Air Temperature", "MERRA-2 Evaporation Rate"].includes(variable)
+        && variable === "Soil Moisture"
         && <div className="regionAnalysisMode">
           <label htmlFor="polygonAggregationMode">{isTurkish ? "POLİGON ZAMANSAL TOPLAMA" : "POLYGON TEMPORAL AGGREGATION"}</label>
           <select id="polygonAggregationMode" value={polygonAggregationMode} onChange={(event) => onPolygonAggregationModeChange?.(event.target.value)}>
