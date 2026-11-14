@@ -30,11 +30,13 @@ def regional_exposure(
 
     try:
         region = ee.Geometry.Rectangle([west, south, east, north], "EPSG:4326", False)
-        population = (
+        population_collection = (
             ee.ImageCollection(POPULATION_DATASET)
             .filterDate(f"{POPULATION_YEAR}-01-01", f"{POPULATION_YEAR + 1}-01-01")
             .select("population")
-            .mosaic()
+        )
+        population = population_collection.mosaic().setDefaultProjection(
+            population_collection.first().select("population").projection()
         )
         population_at_1km = population.reduceResolution(
             reducer=ee.Reducer.sum(), maxPixels=1024

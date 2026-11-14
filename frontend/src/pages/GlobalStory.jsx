@@ -176,7 +176,7 @@ export default function GlobalStory({ language = "en", onBack }) {
         }
         return currentYear + 1;
       });
-    }, 1800);
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [timelineEndYear, playing]);
 
@@ -345,7 +345,7 @@ export default function GlobalStory({ language = "en", onBack }) {
       })));
       setContrastResults(results);
     } catch (loadError) {
-      setContrastError(loadError.message || (isTurkish ? "NASA/JPL karşılaştırma verisi alınamadı." : "NASA/JPL comparison data could not be loaded."));
+      setContrastError(loadError.message || (isTurkish ? "Tarihsel deniz seviyesi karşılaştırması yüklenemedi." : "Historical sea-level comparison could not be loaded."));
     } finally {
       setContrastLoading(false);
     }
@@ -518,8 +518,8 @@ export default function GlobalStory({ language = "en", onBack }) {
             <span>{isTurkish ? "CHALLENGE DEMOSU · AYNI DEĞİŞKEN, İKİ BÖLGE" : "CHALLENGE DEMO · SAME VARIABLE, TWO REGIONS"}</span>
             <h2 id="contrastDemoTitle">{isTurkish ? "Okyanus seviyesindeki bölgesel zıtlık" : "Regional contrast in sea level"}</h2>
             <p>{isTurkish
-              ? "NASA, 1993–2007 arasında Batı Pasifik'te yaygın yükseliş ve ABD orta Atlantik açıklarında deniz seviyesi düşüş alanı bildirdi. Aşağıdaki iki NASA/JPL hücresinin yıllık serileri ve testleri canlı yüklenir; bu, NASA haritasının birebir yeniden üretimi değildir."
-              : "NASA reported widespread sea-surface-height rise in the western Pacific and a decline area off the U.S. mid-Atlantic during 1993–2007. The annual series and tests for the two NASA/JPL cells below load live; this is not an exact reproduction of NASA's map."}</p>
+              ? "NASA'nın 1993–2007 uydu altimetrisi haritası Batı Pasifik'te yükseliş, ABD orta Atlantik açığında düşüş gösterir. Aşağıdaki 1993–2007 hücre serileri HYCOM okyanus modelinden canlı alınır; uydu ölçümü veya NASA haritasının yeniden üretimi değildir."
+              : "NASA's 1993–2007 satellite-altimetry map shows rise in the western Pacific and decline off the U.S. mid-Atlantic. The 1993–2007 cell series below load live from the HYCOM ocean model; they are not satellite measurements or a reproduction of NASA's map."}</p>
           </div>
           <button type="button" onClick={() => {
             setContrastOpen((open) => !open);
@@ -545,7 +545,7 @@ export default function GlobalStory({ language = "en", onBack }) {
               </label>
             ))}
             <button type="button" disabled={contrastLoading} onClick={runContrastingSeaLevelDemo}>
-              {contrastLoading ? (isTurkish ? "NASA/JPL VERİSİ YÜKLENİYOR…" : "LOADING NASA/JPL DATA…") : (isTurkish ? "1993–2007 DÖNEMİNİ ANALİZ ET" : "ANALYZE 1993–2007")}
+              {contrastLoading ? (isTurkish ? "HYCOM MODEL SERİSİ YÜKLENİYOR…" : "LOADING HYCOM MODEL SERIES…") : (isTurkish ? "1993–2007 DÖNEMİNİ ANALİZ ET" : "ANALYZE 1993–2007")}
             </button>
           </div>
           {contrastError && <p className="storyError" role="alert">{contrastError}</p>}
@@ -555,10 +555,12 @@ export default function GlobalStory({ language = "en", onBack }) {
               <article key={id}>
                 <h3>{name}</h3>
                 <p>{analysis.trend} · Sen {formatValue(analysis.sen_slope)} {analysis.unit}/yr · p={formatPValue(analysis.p_value, isTurkish)}</p>
-                <p>{analysis.significant
-                  ? (isTurkish ? "p < 0,05: anlamlı trend" : "p < 0.05: significant trend")
-                  : (isTurkish ? "p ≥ 0,05 veya test için yetersiz veri" : "p ≥ 0.05 or insufficient data for a significance test")}</p>
-                <small>{lat.toFixed(1)}°, {lon.toFixed(1)}° · 1993–2007 · {analysis.observation_count ?? analysis.raw_series?.length ?? 0} {isTurkish ? "yıllık gözlem" : "annual observations"} · {analysis.source} · {analysis.dataset_id}</small>
+                <p>{analysis.model_output
+                  ? (isTurkish ? "Model çıktısı: istatistiksel anlamlılık testi uygulanmadı." : "Model output: no statistical significance test was applied.")
+                  : analysis.significant
+                    ? (isTurkish ? "p < 0,05: anlamlı trend" : "p < 0.05: significant trend")
+                    : (isTurkish ? "p ≥ 0,05 veya test için yetersiz veri" : "p ≥ 0.05 or insufficient data for a significance test")}</p>
+                <small>{lat.toFixed(1)}°, {lon.toFixed(1)}° · {analysis.period || "1993-2007"} · {analysis.observation_count ?? analysis.raw_series?.length ?? 0} {isTurkish ? "yıllık gözlem" : "annual observations"} · {analysis.source} · {analysis.dataset_id}</small>
                 <AnnualSeriesChart series={analysis.raw_series || []} slope={analysis.sen_slope} unit={analysis.unit || ""} language={language} />
               </article>
             ))}
@@ -572,7 +574,8 @@ export default function GlobalStory({ language = "en", onBack }) {
           </div>}
           <p className="contrastCitation">
             <a href="https://science.nasa.gov/earth/earth-observatory/regional-patterns-of-sea-level-change-1993-2007-8875/" target="_blank" rel="noreferrer">{isTurkish ? "NASA Earth Observatory · Bölgesel deniz seviyesi örüntüleri, 1993–2007 ↗" : "NASA Earth Observatory · Regional Patterns of Sea Level Change, 1993–2007 ↗"}</a>
-            <span>{isTurkish ? "NASA/JPL ürünü yaklaşık 1° okyanus hücresidir; kıyı gelgit ölçümü değildir. Test, yıllık hücre serisine Hamed–Rao düzeltmeli Mann–Kendall uygular." : "NASA/JPL values are approximately 1° ocean cells, not coastal tide-gauge measurements. The test applies Hamed–Rao modified Mann–Kendall to each annual cell series."}</span>
+            <span>{isTurkish ? "NASA haritası uydu altimetrisi ürünüdür. Canlı karşılaştırma, yaklaşık 0,08° çözünürlüklü HYCOM modelinin yıllık deniz yüzeyi yüksekliğini gösterir; model geçişleri sonucu etkileyebilir ve anlamlılık testi verilmez." : "NASA's map is based on satellite altimetry. The live comparison shows annual HYCOM modeled sea-surface elevation at approximately 0.08° resolution; model transitions may affect results, so no significance test is reported."}</span>
+            <a href="https://developers.google.com/earth-engine/datasets/catalog/HYCOM_sea_surface_elevation" target="_blank" rel="noreferrer">{isTurkish ? "HYCOM veri kümesi ayrıntıları ↗" : "HYCOM dataset details ↗"}</a>
           </p>
         </>}
       </section>

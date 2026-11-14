@@ -50,6 +50,27 @@ class SeaLevelTests(unittest.TestCase):
                 sea_level.analyze_sea_level(39.0, 35.0, 2017, 2020)
         hycom.assert_not_called()
 
+    def test_pre_noaa_interval_uses_historical_hycom_model(self):
+        expected = {"source": "HYCOM ocean model"}
+        with patch.object(sea_level, "_read_noaa_series_rows") as noaa, patch.object(
+            sea_level, "_analyze_hycom_fallback", return_value=expected
+        ) as hycom:
+            result = sea_level.analyze_sea_level(36.0, -70.0, 1993, 2007)
+
+        noaa.assert_not_called()
+        hycom.assert_called_once_with(
+            36.0,
+            -70.0,
+            1993,
+            2007,
+            "Requested historical period predates NOAA satellite-altimetry coverage in 2017.",
+        )
+        self.assertEqual(result, expected)
+
+    def test_pre_noaa_interval_rejects_mixed_sources(self):
+        with self.assertRaisesRegex(ValueError, "Choose a period covered by one source"):
+            sea_level.analyze_sea_level(36.0, -70.0, 1993, 2024)
+
     def test_hycom_fallback_hides_significance_and_warns_about_model_steps(self):
         fake_ee = MagicMock()
         fake_ee.FeatureCollection.return_value.getInfo.return_value = {

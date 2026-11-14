@@ -19,6 +19,7 @@ NOAA_START_YEAR = 2017
 NOAA_DOCUMENTATION_URL = "https://coastwatch.noaa.gov/erddap/info/noaacwBLENDEDsshDaily/index.html"
 REQUEST_TIMEOUT_SECONDS = 45
 NOAA_SERIES_TIMEOUT_SECONDS = 90
+HYCOM_START_YEAR = 1992
 HYCOM_LATEST_COMPLETE_YEAR = 2023
 
 
@@ -148,7 +149,7 @@ def _analyze_hycom_fallback(
     end_year: int,
     portal_error: str,
 ) -> dict:
-    fallback_start_year = max(start_year, NOAA_START_YEAR)
+    fallback_start_year = max(start_year, HYCOM_START_YEAR)
     fallback_end_year = min(end_year, HYCOM_LATEST_COMPLETE_YEAR)
     if fallback_start_year > fallback_end_year:
         raise RuntimeError(
@@ -247,6 +248,21 @@ def analyze_sea_level(lat: float, lon: float, start_year: int, end_year: int) ->
         raise ValueError("Invalid coordinates")
     if end_year < start_year:
         raise ValueError("end_year must be greater than or equal to start_year")
+
+    if start_year < NOAA_START_YEAR:
+        if end_year > HYCOM_LATEST_COMPLETE_YEAR:
+            raise ValueError(
+                f"NOAA satellite-altimetry coverage begins in {NOAA_START_YEAR}; "
+                f"the historical HYCOM model record ends in {HYCOM_LATEST_COMPLETE_YEAR}. "
+                "Choose a period covered by one source."
+            )
+        return _analyze_hycom_fallback(
+            lat,
+            lon,
+            max(start_year, HYCOM_START_YEAR),
+            end_year,
+            f"Requested historical period predates NOAA satellite-altimetry coverage in {NOAA_START_YEAR}.",
+        )
 
     analysis_start_year = max(start_year, NOAA_START_YEAR)
     analysis_end_year = min(end_year, datetime.now(timezone.utc).year - 1)
