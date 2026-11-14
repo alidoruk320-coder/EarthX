@@ -20,6 +20,13 @@ class SeriesAnalysisRequest(BaseModel):
     series: list[dict]
 
 
+class SwotLakeAnalysisRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    start_year: int = Field(default=2023, ge=2023, le=2100)
+    end_year: int = Field(ge=2023, le=2100)
+
+
 class RegionAnalysisRequest(BaseModel):
     geometry: dict
     variable: str = Field(min_length=1)

@@ -34,8 +34,6 @@ VARIABLES = {
     "total_column_ozone": (1979, CURRENT_COMPLETE_YEAR),
     "merra2_t2m": (1980, CURRENT_COMPLETE_YEAR),
     "merra2_evaporation": (1980, CURRENT_COMPLETE_YEAR),
-    "gldas_root_moisture": (2000, CURRENT_COMPLETE_YEAR),
-    "gldas_surface_runoff": (2000, CURRENT_COMPLETE_YEAR),
     "temperature": (2002, CURRENT_COMPLETE_YEAR),
     "precipitation": (2002, CURRENT_COMPLETE_YEAR),
     "sea_level": (2017, CURRENT_COMPLETE_YEAR),
@@ -277,7 +275,6 @@ def run_worker(payload):
     else:
         memory_sensitive = variable in {
             "merra2_evaporation",
-            "gldas_root_moisture", "gldas_surface_runoff",
         }
         retry_counts = [count for count in (min(len(points), 16), 8, 4) if 0 < count <= len(points)] if memory_sensitive else [len(points)]
         point_results = []

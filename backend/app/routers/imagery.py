@@ -18,8 +18,6 @@ LATEST_COMPLETE_YEAR = {
     "total_column_ozone": CURRENT_COMPLETE_YEAR,
     "merra2_t2m": CURRENT_COMPLETE_YEAR,
     "merra2_evaporation": CURRENT_COMPLETE_YEAR,
-    "gldas_root_moisture": CURRENT_COMPLETE_YEAR,
-    "gldas_surface_runoff": CURRENT_COMPLETE_YEAR,
 }
 FIRST_AVAILABLE_YEAR = {
     "temperature": 2000,
@@ -31,8 +29,6 @@ FIRST_AVAILABLE_YEAR = {
     "total_column_ozone": 1979,
     "merra2_t2m": 1980,
     "merra2_evaporation": 1980,
-    "gldas_root_moisture": 2000,
-    "gldas_surface_runoff": 2000,
 }
 
 

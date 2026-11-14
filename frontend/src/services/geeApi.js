@@ -9,8 +9,6 @@ export const LABEL_TO_ID = {
   "GPM Precipitation Rate": "gpm_precipitation",
   "Total Column Ozone": "total_column_ozone",
   "MERRA-2 Air Temperature": "merra2_t2m",
-  "GLDAS Root-Zone Soil Moisture": "gldas_root_moisture",
-  "GLDAS Surface Runoff": "gldas_surface_runoff",
 };
 
 export const GEE_BACKED_LABELS = [
@@ -19,8 +17,6 @@ export const GEE_BACKED_LABELS = [
   "GRACE Total Water Storage Anomaly",
   "GPM Precipitation Rate",
   "Total Column Ozone",
-  "GLDAS Root-Zone Soil Moisture",
-  "GLDAS Surface Runoff",
 ];
 
 export const NASA_POWER_LABELS = [
@@ -113,25 +109,6 @@ export function analyzeSampledSoilMoistureRegion(geometry, samplePoints, startYe
     body: JSON.stringify({
       geometry,
       variable: "soil_moisture",
-      start_year: startYear,
-      end_year: endYear,
-      sampling_method: "sampled_boundary_filtered",
-      sample_points: samplePoints.map(({ lat, lon, weight }) => ({ lat, lon, weight })),
-    }),
-  });
-}
-
-export function analyzeSampledRegionGEE(geometry, variableLabel, samplePoints, startYear, endYear) {
-  const variable = LABEL_TO_ID[variableLabel];
-  if (!variable) throw new Error(`Unsupported Earth Engine variable: ${variableLabel}`);
-  return request("/analyze-region", {
-    timeoutMs: 180_000,
-    timeoutMessage: "Hızlı bölgesel analiz 3 dakika içinde tamamlanamadı. Daha küçük bir bölge veya daha kısa dönem seçin.",
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      geometry,
-      variable,
       start_year: startYear,
       end_year: endYear,
       sampling_method: "sampled_boundary_filtered",

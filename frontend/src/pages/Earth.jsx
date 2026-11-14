@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import EarthViewer from "../cesium/Viewer";
 import SearchBar from "../components/SearchBar";
 import AnalysisPanel from "../components/AnalysisPanel";
+import SwotLakePicker from "../components/SwotLakePicker";
 import YearSlider from "../components/YearSlider";
 import { getNasaPowerSeries, NASA_POWER_SERIES } from "../nasa/power";
 import { resolvePlaceBoundary } from "../api/geocoder";
@@ -10,8 +11,11 @@ import { fetchGibsCatalog, GIBS_GALLERY_KEYS, GIBS_LAYERS, registerGibsLayer } f
 import { getBiodiversityContext } from "../services/biodiversity";
 import { ANALYSIS_VARIABLES, ANALYSIS_VARIABLE_LABELS, getAnalysisPeriod, normalizeAnalysisRange } from "../data/analysisVariables";
 import { isMarinePlace } from "../api/geocoder";
+import { analyzeSwotLake } from "../services/swotApi";
+import { simplify as simplifyGeoJSON } from "@turf/turf";
 
 const VARIABLES = ANALYSIS_VARIABLE_LABELS;
+const SWOT_LAKE_VARIABLE = "SWOT Lake Surface Water Elevation";
 
 function coordinateKey(lat, lon) {
   return `${Number(lat).toFixed(5)},${Number(lon).toFixed(5)}`;
@@ -19,6 +23,29 @@ function coordinateKey(lat, lon) {
 
 function latestCompleteYearForAnalysis(variable) {
   return ANALYSIS_VARIABLES[variable]?.endYear ?? new Date().getUTCFullYear() - 1;
+}
+
+function simplifyLargeNdviPolygon(geometry, variable) {
+  if (variable !== "NDVI / Vegetation" || !geometry) return geometry;
+  const countVertices = (value) => {
+    if (!Array.isArray(value)) return 0;
+    if (value.length >= 2 && value.slice(0, 2).every(Number.isFinite)) return 1;
+    return value.reduce((total, item) => total + countVertices(item), 0);
+  };
+  if (countVertices(geometry.coordinates) < 10_000) return geometry;
+
+  const simplified = simplifyGeoJSON(geometry, { tolerance: 0.002, highQuality: true });
+  const ringsAreValid = (coordinates, type) => {
+    const polygons = type === "Polygon" ? [coordinates] : coordinates;
+    return polygons.every((polygon) => polygon.every((ring) =>
+      ring.length >= 4
+      && ring[0][0] === ring[ring.length - 1][0]
+      && ring[0][1] === ring[ring.length - 1][1]
+    ));
+  };
+  return simplified.type === geometry.type && ringsAreValid(simplified.coordinates, simplified.type)
+    ? simplified
+    : geometry;
 }
 
 function mapAnalysisStats(result) {
@@ -33,6 +60,8 @@ function mapAnalysisStats(result) {
       || (pValue != null && Number.isFinite(Number(pValue)) ? "available" : "unavailable"),
     testMethod: result?.test_method ?? null,
     message: result?.message ?? null,
+    trendlineStartValue: result?.trendline_start_value ?? null,
+    trendlineEndValue: result?.trendline_end_value ?? null,
   };
 }
 
@@ -46,6 +75,36 @@ function localizedSeaLevelWarning(result, isTurkish) {
   return isTurkish
     ? `HYCOM okyanus model çıktısı kullanıldı; uydu altimetrisi değildir. Model sürümü geçişleri ani basamaklar yaratabilir; trend güvenilir değildir ve istatistiksel anlamlılık raporlanmaz.${step}`
     : `${result.fallback_warning || "HYCOM model output used."}${step}`;
+}
+
+function CascadeResult({ result, isTurkish }) {
+  if (result.error) {
+    return <p className="cascadeResult" role="alert">{result.error}</p>;
+  }
+  if (result.correlation == null) {
+    return <p className="cascadeResult" role="status">
+      {isTurkish
+        ? "Ortak dönemde en az 10 geçerli yıllık eşleşme bulunamadı; korelasyon hesaplanamadı."
+        : "Fewer than 10 valid annual pairs were available in the shared period; correlation could not be calculated."}
+    </p>;
+  }
+
+  const adjustedPValue = result.adjusted_p_value ?? result.p_value;
+  return <div className="cascadeResult" role="status" aria-live="polite">
+    <strong>{isTurkish
+      ? result.significant
+        ? "Gecikme düzeltmesinden sonra istatistiksel ilişki bulundu."
+        : "Gecikme düzeltmesinden sonra istatistiksel anlamlılık bulunmadı."
+      : result.significant
+        ? "A statistically significant association was found after lag adjustment."
+        : "No statistically significant association was found after lag adjustment."}</strong>
+    <p>{isTurkish
+      ? `En güçlü taranan eşleşme: r=${Number(result.correlation).toFixed(3)} · gecikme ${result.lag_years} yıl · ham p=${Number(result.p_value).toPrecision(3)} · düzeltilmiş p=${Number(adjustedPValue).toPrecision(3)}.`
+      : `Strongest tested match: r=${Number(result.correlation).toFixed(3)} · ${result.lag_years}-year lag · raw p=${Number(result.p_value).toPrecision(3)} · adjusted p=${Number(adjustedPValue).toPrecision(3)}.`}</p>
+    <small>{isTurkish
+      ? `${result.common_observation_count} ortak yıllık gözlem, ${result.tested_lag_count} gecikme sınandı. Yıllık serilerde otokorelasyon modellenmedi; korelasyon nedensellik göstermez.`
+      : `${result.common_observation_count} shared annual observations; ${result.tested_lag_count} lags tested. Annual-series autocorrelation is not modeled; correlation does not establish causation.`}</small>
+  </div>;
 }
 
 const GIBS_ICONS = {
@@ -65,7 +124,6 @@ const LAYER_GALLERY = [
     color: GIBS_ICONS[key][1],
     kind: "gibs",
   })),
-  { icon: "↗", label: "Trend Layer", color: "trend" },
   { icon: "♧", label: "Biodiversity Context", color: "biodiversity", kind: "context" },
   { icon: "⇄", label: "Cascade Mode", color: "cascade" },
   { icon: "◎", label: "Impact Mode", color: "impact" },
@@ -84,6 +142,8 @@ const GIBS_LABELS = {
 };
 
 const DISCOVERIES = [
+  { id: "aral_swot", title: "Large Aral Sea · SWOT water elevation", detail: "Exploratory Sen slope; no significance test", lat: 45.149449, lon: 58.560971, variable: SWOT_LAKE_VARIABLE },
+  { id: "chad_swot", title: "Lake Chad · SWOT water elevation", detail: "Exploratory Sen slope; no significance test", lat: 13.251389, lon: 15.173245, variable: SWOT_LAKE_VARIABLE },
   { id: "aral", title: "Aral Sea region", detail: "SMAP soil-moisture change; not a measure of the lake's water level", lat: 45.2, lon: 59.6, variable: "Soil Moisture" },
   { id: "sahel", title: "Sahel Greening Anomaly", detail: "Unexpected vegetation recovery", lat: 14.5, lon: 1.5, variable: "NDVI / Vegetation" },
   { id: "antarctic", title: "Antarctic coastal water-mass anomaly", detail: "GRACE total-water-storage anomaly; not a direct ice-loss measurement", lat: -76, lon: -105, variable: "GRACE Total Water Storage Anomaly" },
@@ -136,11 +196,9 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     "Total Column Ozone": "Toplam Sütun Ozonu",
     "MERRA-2 Air Temperature": "MERRA-2 Hava Sıcaklığı",
     "MERRA-2 Evapotranspiration Energy Flux": "MERRA-2 Evapotranspirasyon Enerji Akısı",
-    "GLDAS Root-Zone Soil Moisture": "GLDAS Kök Bölgesi Toprak Nemi",
-    "GLDAS Surface Runoff": "GLDAS Yüzey Akışı",
+    [SWOT_LAKE_VARIABLE]: "SWOT Göl Yüzeyi Su Yüksekliği",
     "Sea Level": "Deniz Seviyesi",
     "Biodiversity Context": "Biyoçeşitlilik Bağlamı",
-    "Trend Layer": "Trend Katmanı",
     "Cascade Mode": "Cascade Modu",
     "Impact Mode": "Etki Modu",
     "Global Story": "Küresel Hikâye",
@@ -158,6 +216,8 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     ? translatedLabels[label] || translatedGibsLabels[label] || label
     : GIBS_LABELS[label] || label;
   const discoveryTranslations = {
+    aral_swot: { title: "Büyük Aral Gölü · SWOT su yüzeyi", detail: "Keşifsel Sen eğimi; anlamlılık testi yapılmaz" },
+    chad_swot: { title: "Çad Gölü · SWOT su yüzeyi", detail: "Keşifsel Sen eğimi; anlamlılık testi yapılmaz" },
     aral: { title: "Aral Gölü çevresi", detail: "SMAP toprak nemi değişimi; göl seviyesi ölçümü değildir" },
     sahel: { title: "Sahel'de Beklenmedik Yeşillenme", detail: "Kurak bölgede bitki örtüsü artışı" },
     antarctic: { title: "Antarktika çevresi su kütlesi", detail: "GRACE toplam su depolama anomalisi; buz kaybının doğrudan ölçümü değildir" },
@@ -198,6 +258,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
   const [impactError, setImpactError] = useState("");
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisStage, setAnalysisStage] = useState("idle");
+  const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const [cascadeVariable, setCascadeVariable] = useState("NDVI / Vegetation");
   const [cascadeResult, setCascadeResult] = useState(null);
   const [cascadeLoading, setCascadeLoading] = useState(false);
@@ -210,6 +271,17 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
   const minYear = mapLayer.minYear;
   const maxYear = mapLayer.maxYear;
   const selectedLayerTitle = mapLayer.title || selectedMapLayer;
+
+  useEffect(() => {
+    if (!analysisLoading) {
+      setAnalysisElapsedSeconds(0);
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setAnalysisElapsedSeconds((elapsed) => elapsed + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [analysisLoading]);
 
   function getTrendMapSource(variable) {
     if (variable === "Temperature") return "NASA MODIS Terra LST · MODIS/061/MOD11A2 (LST_Day_1km)";
@@ -229,6 +301,29 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     } finally {
       setCatalogLoading(false);
     }
+  }
+
+  function handleSwotLakeSelect(lake) {
+    const place = {
+      display_name: lake.label[language] || lake.label.en,
+      lat: lake.lat,
+      lon: lake.lon,
+    };
+    selectedVariableRef.current = SWOT_LAKE_VARIABLE;
+    setSelectedVariable(SWOT_LAKE_VARIABLE);
+    setSelectedPlace(place);
+    setAnalysisRange(getAnalysisPeriod(SWOT_LAKE_VARIABLE));
+    setAnalysis(null);
+    viewerRef.current?.flyTo(lake.lat, lake.lon);
+    runAnalysis(
+      place.display_name,
+      SWOT_LAKE_VARIABLE,
+      year,
+      lake.lat,
+      lake.lon,
+      place,
+      "sampled_boundary_filtered",
+    );
   }
 
   function updateWorld(nextYear, nextLayer = selectedMapLayer) {
@@ -517,8 +612,16 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     rangeOverride = null,
     aggregationModeOverride = null,
   ) {
+    const requestId = ++analysisRequestRef.current;
+    setAnalysisStage(requestedRegionMode === "polygon_area_weighted" ? "polygon" : place?.geojson ? "quick" : "point");
+    setAnalysisElapsedSeconds(0);
+    setAnalysisLoading(true);
+    if (!preserveCurrent) setAnalysis(null);
     let effectivePlace = place;
-    if (requestedRegionMode === "polygon_area_weighted" && !effectivePlace?.geojson && effectivePlace?.display_name) {
+    if (variable !== SWOT_LAKE_VARIABLE
+      && requestedRegionMode === "polygon_area_weighted"
+      && !effectivePlace?.geojson
+      && effectivePlace?.display_name) {
       try {
         const resolved = await resolvePlaceBoundary(effectivePlace, effectivePlace.display_name);
         if (resolved?.geojson) {
@@ -528,10 +631,10 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         console.warn("Polygon boundary was not resolved before analysis; falling back to the current place object.", error);
       }
     }
-    const requestId = ++analysisRequestRef.current;
+    if (requestId !== analysisRequestRef.current) return;
     setAnalysisStage(requestedRegionMode === "polygon_area_weighted" ? "polygon" : effectivePlace?.geojson ? "quick" : "point");
     if (variable === "Sea Level" && effectivePlace?.isMarine !== true) {
-      setAnalysisLoading(false);
+      if (requestId === analysisRequestRef.current) setAnalysisLoading(false);
       showSeaLevelUnavailable(
         place || { display_name: placeName, lat, lon },
         isTurkish
@@ -545,9 +648,64 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       ? analysisRange
       : defaultRange);
     const completeDataEndYear = Math.min(Number(requestedDataEndYear), latestCompleteYearForAnalysis(variable));
-    setAnalysisLoading(true);
-    if (!preserveCurrent) setAnalysis(null);
     try {
+      if (variable === SWOT_LAKE_VARIABLE) {
+        const swot = await analyzeSwotLake(Number(lat), Number(lon), dataStartYear, completeDataEndYear);
+        if (requestId !== analysisRequestRef.current) return;
+        const series = (swot.raw_series || []).map((point) => ({
+          date: point.date,
+          year: Number(point.date.slice(0, 4)),
+          value: Number(point.value),
+          uncertainty: point.uncertainty,
+          standardDeviation: point.standard_deviation,
+          areaTotalKm2: point.area_total_km2,
+          areaDetectedKm2: point.area_detected_km2,
+          quality_f: point.quality_f,
+          ice_clim_f: point.ice_clim_f,
+          ice_dyn_f: point.ice_dyn_f,
+        }));
+        const firstObservation = series[0];
+        const lastObservation = series[series.length - 1];
+        const lakeLatitude = Number(swot.lake_center.lat);
+        const lakeLongitude = Number(swot.lake_center.lon);
+        const analysisResult = {
+          name: swot.lake_name,
+          variable,
+          year: selectedYear,
+          analysisStartYear: dataStartYear,
+          analysisEndYear: completeDataEndYear,
+          observedStartYear: firstObservation ? Number(firstObservation.date.slice(0, 4)) : null,
+          observedEndYear: lastObservation ? Number(lastObservation.date.slice(0, 4)) : null,
+          observedStartDate: swot.observed_start_date,
+          observedEndDate: swot.observed_end_date,
+          observationSeries: true,
+          series,
+          regionMode: false,
+          regionType: "lake feature",
+          method: "swot_lake_feature_observations",
+          locationSelectionDistanceKm: swot.distance_to_lake_km,
+          lat: lakeLatitude,
+          lon: lakeLongitude,
+          source: swot.source,
+          datasetId: swot.dataset_id,
+          datasetDocUrl: swot.documentation_url,
+          temporalResolution: swot.temporal_resolution,
+          sourceUsed: swot.dataset_id,
+          unit: swot.unit,
+          cacheUpdatedAt: swot.cache_updated_at,
+          sourceWarning: isTurkish
+            ? `Koordinat ${swot.distance_to_lake_km} km uzaktaki ${swot.lake_name} göl özelliğini seçti; noktalar seçili koordinattaki ölçümler değil, göl özelliğinin SWOT geçiş gözlemleridir. Kalite/buz bayrakları kaynakta verildiği gibi korunur; belgelenmemiş bir filtre uygulanmaz.`
+            : `The coordinate selected the ${swot.lake_name} lake feature ${swot.distance_to_lake_km} km away; dots are SWOT overpass observations of the lake feature, not measurements at the selected coordinate. Quality/ice flags are preserved as supplied; no undocumented filter is applied.`,
+          modelOutput: false,
+          stats: mapAnalysisStats(swot.stats),
+          errorMessage: null,
+          errorDetail: null,
+          displayYearNote: null,
+        };
+        setAnalysis(analysisResult);
+        return analysisResult;
+      }
+
       const regionBounds = getRegionBounds(effectivePlace);
       const regionSamplePoints = effectivePlace ? getRegionSamplePoints(effectivePlace, 16) : [];
       if (variable === "Sea Level" && effectivePlace?.geojson && effectivePlace?.isMarine && regionBounds
@@ -613,6 +771,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       let partialYearExcluded = [];
       let firstFullYear = null;
       let regionResponse = null;
+      let inputBoundarySimplified = false;
       let pointRetrievalInfo = null;
       let pointResults = [];
 
@@ -623,8 +782,10 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         unit = ANALYSIS_VARIABLES[variable]?.unit;
         stats = { trend: "Insufficient Data", slope: null, zScore: null, pValue: null, significant: false };
       } else if (polygonMode) {
+        const analysisGeometry = simplifyLargeNdviPolygon(effectivePlace.geojson, variable);
+        inputBoundarySimplified = analysisGeometry !== effectivePlace.geojson;
         regionResponse = await analyzeRegionGEE(
-          effectivePlace.geojson,
+          analysisGeometry,
           variable,
           dataStartYear,
           completeDataEndYear,
@@ -713,13 +874,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         let failedPointCount = 0;
         let successfulSamplePoints = regionSamplePoints;
         if (regionMode) {
-          const memorySensitiveQuickVariables = [
-            "GLDAS Root-Zone Soil Moisture",
-            "GLDAS Surface Runoff",
-          ];
-          const requestedCounts = memorySensitiveQuickVariables.includes(variable)
-            ? [Math.min(16, regionSamplePoints.length), 8, 4].filter((count) => count > 0 && count <= regionSamplePoints.length)
-            : [regionSamplePoints.length];
+          const requestedCounts = [regionSamplePoints.length];
           let settled = [];
           let activeSamplePoints = regionSamplePoints;
           for (const pointCount of requestedCounts) {
@@ -881,6 +1036,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         method: regionResponse?.method || (regionMode ? "sampled_boundary_filtered" : "point"),
         retrievalMethod: regionResponse?.retrieval_method || pointRetrievalInfo?.method || null,
         earthEngineRequestCount: regionResponse?.earth_engine_request_count ?? pointRetrievalInfo?.requestCount ?? null,
+        retrievalRetryCount: regionResponse?.retrieval_retry_count ?? 0,
         validPixelCount: regionResponse?.valid_pixel_count ?? null,
         partialYearExcluded: regionResponse?.partial_year_excluded ?? partialYearExcluded,
         firstFullYear: regionResponse?.first_full_year ?? firstFullYear,
@@ -915,6 +1071,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
         sourceUsed: regionResponse?.source_used || regionResponse?.dataset_id || datasetId || null,
         scaleUsed: regionResponse?.scale_used ?? null,
         geometrySimplifyMeters: regionResponse?.geometry_simplify_m ?? null,
+        inputBoundarySimplified,
         sourceWarning,
         modelOutput: regionResponse?.model_output === true,
         unit,
@@ -983,9 +1140,9 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
             ? "NASA POWER veri isteği 45 saniye içinde tamamlanamadı. Daha kısa dönem veya farklı bir bölge deneyin."
             : "NASA POWER data did not finish within 45 seconds. Try a shorter period or another region.")
           : error.code === "ANALYSIS_TIMEOUT"
-          ? (isTurkish
-            ? "Analiz 3 dakika içinde tamamlanamadı. Daha kısa dönem veya farklı bölge deneyin."
-            : "Analysis did not finish within 3 minutes. Try a shorter period or another region.")
+            ? (isTurkish
+                ? "Analiz 3 dakika içinde tamamlanamadı. Daha kısa dönem veya farklı bölge deneyin."
+                : "Analysis did not finish within 3 minutes. Try a shorter period or another region.")
           : (isTurkish
             ? "Bu ürün için bölgesel analiz şu an tamamlanamadı, daha kısa dönem ya da farklı bölge dene."
             : "Regional analysis for this product could not be completed. Try a shorter period or another region."),
@@ -1015,6 +1172,13 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     setRegionAnalysisMode("sampled_boundary_filtered");
     setAnalysisRange(getAnalysisPeriod(variable));
     setPolygonAggregationMode("annual");
+
+    if (variable === SWOT_LAKE_VARIABLE) {
+      analysisRequestRef.current += 1;
+      setAnalysisLoading(false);
+      setAnalysis(null);
+      return;
+    }
 
     if (selectedPlace) {
       if (variable === "Sea Level" && selectedPlace.isMarine !== true) {
@@ -1151,6 +1315,12 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       if (!shown) viewerRef.current?.flyTo(Number(place.lat), Number(place.lon));
     });
 
+    if (selectedVariable === SWOT_LAKE_VARIABLE) {
+      analysisRequestRef.current += 1;
+      setAnalysisLoading(false);
+      setAnalysis(null);
+      return;
+    }
     if (selectedVariable === "Sea Level" && selected.geojson && !selected.isMarine) {
       showSeaLevelUnavailable(
         selected,
@@ -1188,6 +1358,12 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
     setDrawMode(false);
     setModeGuide(null);
     viewerRef.current?.flyTo(lat, lon);
+    if (selectedVariable === SWOT_LAKE_VARIABLE) {
+      analysisRequestRef.current += 1;
+      setAnalysisLoading(false);
+      setAnalysis(null);
+      return;
+    }
     checkPointSeaLevelAvailability(place, selectedVariable === "Sea Level");
     if (selectedVariable !== "Sea Level") {
       runAnalysis(place.display_name, selectedVariable, year, lat, lon, place);
@@ -1224,11 +1400,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       return;
     }
     setDiscoveriesOpen(false);
-    if (layer.label === "Cascade Mode" || layer.label === "Trend Layer") setMode("climate");
-    if (layer.label === "Trend Layer" && selectedPlace) {
-      runAnalysis(selectedPlace.display_name, selectedVariable, year,
-        selectedPlace.lat, selectedPlace.lon, selectedPlace);
-    }
+    if (layer.label === "Cascade Mode") setMode("climate");
     if (layer.label === "Cascade Mode") {
       setCascadeResult(null);
       setModeGuide({ type: "cascade" });
@@ -1500,7 +1672,9 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
       />
 
       {/* ANALYSIS */}
-      <AnalysisPanel
+      {selectedVariable === SWOT_LAKE_VARIABLE && !analysis ? (
+        <SwotLakePicker language={language} onSelectLake={handleSwotLakeSelect} />
+      ) : <AnalysisPanel
         data={analysis ? { ...analysis, analysisEndYear: analysis.analysisEndYear ?? analysis.observedEndYear } : analysis}
         language={language}
         mapLayerTitle={selectedLayerTitle}
@@ -1542,20 +1716,42 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
             normalizedMode,
           );
         }}
-        regionModeAvailable={Boolean(selectedPlace?.geojson && getRegionBounds(selectedPlace))}
+        regionModeAvailable={Boolean(selectedVariable !== SWOT_LAKE_VARIABLE && selectedPlace?.geojson && getRegionBounds(selectedPlace))}
         canUsePolygonMode={Boolean(
           selectedPlace?.geojson
+          && selectedVariable !== SWOT_LAKE_VARIABLE
           && GEE_BACKED_LABELS.includes(selectedVariable)
           && !NASA_POWER_LABELS.includes(selectedVariable)
         )}
-      />
+      />}
 
-      {analysisLoading && <div className="analysisLoading">
-        {analysisStage === "polygon"
-          ? (isTurkish ? "İsteğe bağlı poligon alan analizi hesaplanıyor…" : "Optional polygon area analysis is running…")
-          : analysisStage === "quick"
-            ? (isTurkish ? "Sınır içi örneklerden hızlı seri hesaplanıyor…" : "Calculating the quick series from boundary samples…")
-            : isTurkish ? "NASA verisi alınıyor…" : "Fetching NASA data…"}
+      {analysisLoading && <div className={`analysisLoading${["GPM Precipitation Rate", "NDVI / Vegetation"].includes(selectedVariable) && analysisStage === "polygon" ? " analysisLoadingExtended" : ""}`} role="status" aria-live="polite">
+        <strong>{selectedVariable === "GPM Precipitation Rate" && analysisStage === "polygon"
+          ? (isTurkish
+            ? "GPM YAĞIŞ VERİSİ YOĞUN İŞLENİYOR · LÜTFEN YAKLAŞIK 1,5 DAKİKA BEKLEYİN"
+            : "GPM PRECIPITATION DATA IS PROCESSING · PLEASE WAIT ABOUT 1.5 MINUTES")
+          : selectedVariable === "NDVI / Vegetation" && analysisStage === "polygon"
+            ? (isTurkish
+              ? "BİTKİ ÖRTÜSÜ ALAN ANALİZİ SÜRÜYOR · LÜTFEN YAKLAŞIK 1 DAKİKA BEKLEYİN"
+              : "VEGETATION AREA ANALYSIS IS RUNNING · PLEASE WAIT ABOUT 1 MINUTE")
+          : isTurkish ? "LÜTFEN BEKLEYİN · YAKLAŞIK 1 DAKİKA" : "PLEASE WAIT · ABOUT 1 MINUTE"}</strong>
+        <span>
+          {analysisElapsedSeconds < 60
+            ? isTurkish
+              ? `${["GPM Precipitation Rate", "NDVI / Vegetation"].includes(selectedVariable) && analysisStage === "polygon" ? "Poligon alan analizi sürüyor" : "Analiz sürüyor"} · ${analysisElapsedSeconds} sn. ${["GPM Precipitation Rate", "NDVI / Vegetation"].includes(selectedVariable) && analysisStage === "polygon" ? "Sabırla beklediğiniz için teşekkürler." : "Lütfen aynı isteği yeniden başlatmayın."}`
+              : `${["GPM Precipitation Rate", "NDVI / Vegetation"].includes(selectedVariable) && analysisStage === "polygon" ? "Polygon area analysis in progress" : "Analysis in progress"} · ${analysisElapsedSeconds}s. ${["GPM Precipitation Rate", "NDVI / Vegetation"].includes(selectedVariable) && analysisStage === "polygon" ? "Thank you for your patience." : "Please do not restart the request."}`
+            : isTurkish
+              ? `Geçen süre · ${Math.floor(analysisElapsedSeconds / 60)} dk ${analysisElapsedSeconds % 60} sn. İstek sunucuda devam ediyor olabilir.`
+              : `Elapsed time · ${Math.floor(analysisElapsedSeconds / 60)}m ${analysisElapsedSeconds % 60}s. The request may still be running on the server.`}
+        </span>
+        {analysisStage === "polygon" && (
+          <span className="analysisAreaNote">
+            {isTurkish
+              ? "Alan büyüdükçe analiz süresi artabilir."
+              : "Larger analysis areas may take longer to process."}
+          </span>
+        )}
+        <i className={analysisStage === "polygon" ? "polygon" : ""} />
       </div>}
 
       {modeGuide && (
@@ -1563,7 +1759,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
           <button className="modeGuideClose" onClick={() => setModeGuide(null)}>×</button>
           <span className="panelEyebrow">{copy.explain}</span>
           <h3>{modeGuide.type === "cascade" ? (isTurkish ? "Cascade Mode nedir?" : "What is Cascade Mode?") : modeGuide.type === "impact" ? (isTurkish ? "Impact Mode nedir?" : "What is Impact Mode?") : (isTurkish ? "Draw Mode nedir?" : "What is Draw Mode?")}</h3>
-          <p>{modeGuide.type === "cascade" ? (isTurkish ? "İki çevresel değişkeni yıllar içindeki gecikmeyle karşılaştırır. Örneğin yağış değişimini bitki örtüsünün sonraki yıllardaki yanıtıyla inceler. Korelasyon tek başına nedensellik kanıtı değildir." : "It compares environmental variables across year-based time lags, such as vegetation response in the years after rainfall changes. Correlation alone does not establish causation.") : modeGuide.type === "impact" ? (isTurkish ? "Seçilen bölgenin sınır kutusunda 2020 WorldPop nüfus toplamını ve 2014–2024 VIIRS gece ışığı değişimini özetler. Bunlar çevresel trendin neden olduğu etkiyi kanıtlamaz." : "It summarizes 2020 WorldPop population and 2014–2024 VIIRS nighttime-radiance change within the selected region's bounding box. These indicators do not prove effects caused by an environmental trend.") : (isTurkish ? "Küre üzerinde istediğiniz noktaya tıklayın. Ülke veya şehir yazmadan koordinatın zaman içindeki doğrulanmış NASA serisini ve istatistiklerini getirir." : "Click any point on the globe. No country or city name is required; the panel retrieves the verified NASA series and statistics for that coordinate.")}</p>
+          <p>{modeGuide.type === "cascade" ? (isTurkish ? "Cascade (gecikmeli korelasyon), seçili değişkenin yıllık değerini ikinci değişkenin aynı yılındaki veya sonraki 1–6 yıldaki değeriyle karşılaştırır. En güçlü Pearson korelasyonunu seçer ve taranan gecikmeler için p-değerini düzeltir. Bu bir nedensellik testi değildir; yıllık serilerde otokorelasyon modellenmez." : "Cascade (lagged correlation) compares the selected variable's annual value with the second variable in the same year or 1–6 years later. It selects the strongest Pearson correlation and adjusts the p-value across tested lags. This is not a causality test; annual-series autocorrelation is not modeled.") : modeGuide.type === "impact" ? (isTurkish ? "Seçilen bölgenin sınır kutusunda 2020 WorldPop nüfus toplamını ve 2014–2024 VIIRS gece ışığı değişimini özetler. Bunlar çevresel trendin neden olduğu etkiyi kanıtlamaz." : "It summarizes 2020 WorldPop population and 2014–2024 VIIRS nighttime-radiance change within the selected region's bounding box. These indicators do not prove effects caused by an environmental trend.") : (isTurkish ? "Küre üzerinde istediğiniz noktaya tıklayın. Ülke veya şehir yazmadan koordinatın zaman içindeki doğrulanmış NASA serisini ve istatistiklerini getirir." : "Click any point on the globe. No country or city name is required; the panel retrieves the verified NASA series and statistics for that coordinate.")}</p>
           {modeGuide.type === "cascade" && (
             <div className="cascadeTool">
               <label htmlFor="cascadeVariable">{isTurkish ? "Karşılaştırılacak ikinci değişken" : "Second variable to compare"}</label>
@@ -1577,7 +1773,7 @@ export default function Earth({ language = "en", setLanguage, onOpenStory }) {
               </button>
               {!selectedPlace && <small>{isTurkish ? "Önce haritada bir nokta seçin veya yer arayın." : "Select a point on the globe or search for a place first."}</small>}
               {selectedPlace && !GEE_BACKED_LABELS.includes(selectedVariable) && <small>{isTurkish ? "Gecikmeli karşılaştırma şu anda NASA POWER noktası yerine Earth Engine serileriyle çalışır; önce GEE tabanlı bir analiz değişkeni seçin." : "Lagged comparison currently uses Earth Engine series rather than NASA POWER point data; select a GEE-backed analysis variable first."}</small>}
-              {cascadeResult && <p className="cascadeResult">{cascadeResult.error || cascadeResult.message || `${isTurkish ? "Korelasyon" : "Correlation"}: r=${cascadeResult.correlation}; ${isTurkish ? "gecikme" : "lag"}: ${cascadeResult.lag_years} ${isTurkish ? "yıl" : "years"}; p=${cascadeResult.adjusted_p_value ?? cascadeResult.p_value}. ${cascadeResult.message}`}</p>}
+              {cascadeResult && <CascadeResult result={cascadeResult} isTurkish={isTurkish} />}
             </div>
           )}
           {modeGuide.type === "impact" && <div className="cascadeTool impactTool">

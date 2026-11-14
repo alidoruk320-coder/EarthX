@@ -178,10 +178,6 @@ def analyze_region_endpoint(req: RegionAnalysisRequest):
                     req.geometry, req.sample_points, req.start_year, req.end_year,
                     variable=variable,
                 )
-            if variable in {"gldas_root_moisture", "gldas_surface_runoff"}:
-                raise ValueError(
-                    "Sampled-region endpoint mode is not implemented for this variable; use point series or polygon analysis."
-                )
             raise ValueError(
                 "Sampled-region endpoint mode is currently enabled only for MERRA-2 air temperature"
             )

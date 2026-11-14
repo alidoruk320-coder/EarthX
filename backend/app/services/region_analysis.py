@@ -199,6 +199,11 @@ def _scale_for_region(area_m2: float, native_scale_meters: float) -> int:
     return int(math.ceil(max(native_scale_meters, target_scale)))
 
 
+def _as_ee_image(value):
+    """Restore the image type lost by generic Earth Engine computed objects."""
+    return ee.Image(value)
+
+
 def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int) -> list:
     """Fetch polygon summaries with one main region reduction per year."""
     source_geometry = ee.Geometry(geojson)
@@ -266,17 +271,38 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
 
         if monthly_first:
             monthly_images = []
+            monthly_weighted_values = []
+            monthly_valid_counts = []
             for month in range(1, 13):
                 month_start = ee.Date.fromYMD(year, month, 1)
                 month_end = month_start.advance(1, "month")
                 monthly_collection = annual_collection.filterDate(month_start, month_end)
-                monthly_image = ee.Algorithms.If(
-                    monthly_collection.size().eq(0),
-                    empty_band,
-                    monthly_collection.mean().rename(cfg["band"]),
-                )
-                monthly_images.append(monthly_image)
-            annual = ee.ImageCollection.fromImages(monthly_images).mean()
+                if cfg.get("monthly_weight_by_count"):
+                    monthly_collection = monthly_collection.merge(
+                        ee.ImageCollection.fromImages([empty_band])
+                    )
+                    monthly_stats = monthly_collection.reduce(
+                        ee.Reducer.mean().combine(
+                            reducer2=ee.Reducer.count(), sharedInputs=True
+                        )
+                    )
+                    monthly_mean = monthly_stats.select(f"{cfg['band']}_mean")
+                    monthly_count = monthly_stats.select(f"{cfg['band']}_count")
+                    monthly_weighted_values.append(monthly_mean.multiply(monthly_count))
+                    monthly_valid_counts.append(monthly_count)
+                else:
+                    monthly_image = ee.Algorithms.If(
+                        monthly_collection.size().eq(0),
+                        empty_band,
+                        monthly_collection.mean().rename(cfg["band"]),
+                    )
+                    monthly_images.append(monthly_image)
+            if cfg.get("monthly_weight_by_count"):
+                weighted_sum = ee.ImageCollection.fromImages(monthly_weighted_values).sum()
+                valid_count = ee.ImageCollection.fromImages(monthly_valid_counts).sum()
+                annual = weighted_sum.divide(valid_count).rename(cfg["band"])
+            else:
+                annual = ee.ImageCollection.fromImages(monthly_images).mean()
         else:
             annual = ee.Algorithms.If(
                 annual_collection.size().eq(0),
@@ -284,6 +310,9 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
                 annual_collection.select(cfg["band"]).mean().rename(cfg["band"]),
             )
 
+        # Algorithms.If returns a generic ComputedObject in the Python client,
+        # even when both branches are images. Cast before calling Image methods.
+        annual = _as_ee_image(annual)
         return annual.rename(cfg["band"]).multiply(cfg["scale_factor"]).add(cfg.get("offset", 0))
 
     def annual_feature(year):
@@ -349,19 +378,38 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
     rows = []
     batch_size = (
         1 if cfg.get("variable_id") in MEMORY_LIMITED_REGION_VARIABLES
-        else MAX_YEARS_PER_REGION_BATCH
+        else int(cfg.get("years_per_request") or MAX_YEARS_PER_REGION_BATCH)
     )
-    for batch_start in range(start_year, end_year + 1, batch_size):
-        batch_end = min(end_year, batch_start + batch_size - 1)
+
+    def fetch_year_batch(batch_start: int, batch_end: int) -> list:
         batch = ee.FeatureCollection(
             ee.List.sequence(batch_start, batch_end).map(annual_feature)
         )
         try:
-            rows.extend(batch.getInfo()["features"])
+            return batch.getInfo()["features"]
         except EEException as error:
             message = str(error).lower()
-            if batch_start == batch_end and batch_size == 1 and "memory limit exceeded" in message:
-                rows.append({"properties": {
+            retryable = (
+                "too many concurrent aggregations" in message
+                or "memory limit exceeded" in message
+            )
+            if retryable and batch_start < batch_end:
+                # Retry smaller sequential blocks; never fan out EE requests.
+                midpoint = (batch_start + batch_end) // 2
+                logger.warning(
+                    "Retrying polygon analysis in smaller sequential blocks: variable=%s years=%d-%d error=%s",
+                    cfg.get("variable_id"), batch_start, batch_end, error,
+                )
+                return (
+                    fetch_year_batch(batch_start, midpoint)
+                    + fetch_year_batch(midpoint + 1, batch_end)
+                )
+            if "memory limit exceeded" in message:
+                logger.warning(
+                    "Polygon annual request exceeded GEE memory: variable=%s year=%d",
+                    cfg.get("variable_id"), batch_start,
+                )
+                return [{"properties": {
                     "year": batch_start,
                     "numerator": None,
                     "denominator": None,
@@ -369,25 +417,12 @@ def _fetch_ee_features(geojson: dict, cfg: dict, start_year: int, end_year: int)
                     "valid_pixel_count": 0,
                     "area_m2": area_m2,
                     "year_error": str(error),
-                }})
-                logger.warning("Polygon annual request exceeded GEE memory: variable=%s year=%d", cfg.get("variable_id"), batch_start)
-                continue
-            if "too many concurrent aggregations" not in message or batch_start == batch_end:
-                raise
-            for year in range(batch_start, batch_end + 1):
-                single_year = ee.FeatureCollection(
-                    ee.List.sequence(year, year).map(annual_feature)
-                )
-                try:
-                    rows.extend(single_year.getInfo()["features"])
-                except EEException as single_error:
-                    if batch_size != 1 or "memory limit exceeded" not in str(single_error).lower():
-                        raise
-                    rows.append({"properties": {
-                        "year": year, "numerator": None, "denominator": None,
-                        "center_value": None, "valid_pixel_count": 0,
-                        "area_m2": area_m2, "year_error": str(single_error),
-                    }})
+                }}]
+            raise
+
+    for batch_start in range(start_year, end_year + 1, batch_size):
+        batch_end = min(end_year, batch_start + batch_size - 1)
+        rows.extend(fetch_year_batch(batch_start, batch_end))
     if not small_polygon:
         for feature in rows:
             properties = feature.get("properties", {})

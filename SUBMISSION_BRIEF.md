@@ -8,10 +8,10 @@ EarthVerse turns NASA Earth-observation and model data into an interactive trend
 
 The app covers the challenge's core workflow:
 
-1. **Choose a measurable Earth-system variable.** The analysis catalog describes each product, band, unit, temporal cadence, period, and source. Available examples include NASA POWER, MODIS, SMAP, GRACE/GRACE-FO, GPM IMERG, MERRA-2, GLDAS, a merged TOMS/OMI ozone record, and NASA/JPL sea-level anomaly.
+1. **Choose a measurable Earth-system variable.** The analysis catalog describes each product, band, unit, temporal cadence, period, and source. Available examples include NASA POWER, MODIS, SMAP, GRACE/GRACE-FO, GPM IMERG, MERRA-2, a merged TOMS/OMI ozone record, and NASA/JPL sea-level anomaly.
 2. **Choose a place or coordinate.** Point analysis requests data at the chosen coordinate. Search prefers an administrative polygon, tries the matching OSM object if search returns a Point, and then tries a FAO GAUL administrative boundary. If no polygon is available, the panel explicitly labels the bounding-box fallback. Fast mode is a sampled estimate; polygon mode performs the area-weighted GEE reduction where supported.
-3. **Inspect the time series.** Source observations are aggregated to annual values for the trend workflow and shown with the selected period and units. The original cadence and product are disclosed so annual averages are not mistaken for annual totals.
-4. **Assess the trend.** The backend reports Sen's slope and Hamed–Rao modified Mann–Kendall results. It requires at least eight continuous annual observations and withholds a significance result when years are missing. A non-significant result is reported as inconclusive evidence, not proof of no change.
+3. **Inspect the time series.** Trend products are aggregated to annual values and shown with their selected period and units. The separate SWOT mode shows individual, irregular lake overpasses instead of annualizing them. Product cadence is disclosed so averages are not mistaken for totals.
+4. **Assess the trend where appropriate.** Annual trend products report Sen's slope and Hamed–Rao modified Mann–Kendall results. The test requires at least eight continuous annual observations and withholds significance when years are missing. SWOT LakeSP is explicitly descriptive only: its short, irregular observations receive no trend test or p-value. A non-significant result is reported as inconclusive evidence, not proof of no change.
 
 ## Suggested live demo (about 3 minutes)
 
@@ -26,6 +26,8 @@ The app covers the challenge's core workflow:
 - The NASA Earth Observatory 1993–2007 sea-level map is contextual background for the demo. It is not a validation of the exact two 1-degree cells returned by the live service. Only call this a verified opposite-trend case after comparing the displayed cell series/statistics with an independent product or published regional analysis.
 - AIRS L3 is not currently a selectable analysis source. Its absence does not omit a mandatory challenge objective: the challenge lists missions and models as examples. Do not imply AIRS is integrated.
 - TOMS/OMI is the merged TOMS/OMI product, not an OMI-only record.
+- GLDAS root-zone moisture and surface runoff were removed from the selectable analysis catalog because the regional quick path relied on only a few points and could not support a representative regional estimate.
+- SWOT LakeSP is available only for the verified Large Aral Sea and Lake Chad features in the cached series. A selected coordinate identifies a nearby lake feature; it is not the measurement location. The plotted dots are irregular water-surface-elevation overpasses, not annual values; the dashed Theil–Sen slope is a descriptive summary over actual elapsed dates, not a significance test. No p-value or statistical significance is claimed. Quality and ice flags are exposed but not filtered until their definitions are validated for the product version.
 - NASA POWER temperature and precipitation point series are separate from the MODIS/GPM rendered map layers. The interface should keep this distinction visible.
 - The trend map shows annual slope/ranking, not pixel-level significance. Point-series significance must not be inferred from map colors.
 - The timeline year selects imagery. Trend statistics use the complete annual time series and therefore remain the same when only the imagery year changes.

@@ -11,6 +11,7 @@ from app.config import VARIABLES, region_config
 from app.main import app
 from app.models.schemas import SeriesAnalysisRequest
 from app.responses import SafeJSONResponse
+from app.routers import point_analysis
 from app.routers.point_analysis import analyze_series_endpoint
 from app.services import region_analysis, trend_engine
 
@@ -33,6 +34,16 @@ class AnalysisSafetyTests(unittest.TestCase):
             trend_engine.analyze_point(39.0, 32.0, "merra2_precipitable_water", 2020, 2021)
         with self.assertRaisesRegex(ValueError, "not configured"):
             region_analysis.analyze_region(POLYGON, "merra2_precipitable_water", 2020, 2021)
+
+    def test_removed_gldas_products_are_not_configured_for_analysis(self):
+        for variable in ("gldas_root_moisture", "gldas_surface_runoff"):
+            with self.subTest(variable=variable):
+                self.assertNotIn(variable, VARIABLES)
+                self.assertNotIn(variable, region_config)
+                with self.assertRaisesRegex(ValueError, "Bilinmeyen değişken"):
+                    trend_engine.analyze_point(39.0, 32.0, variable, 2020, 2021)
+                with self.assertRaisesRegex(ValueError, "not configured"):
+                    region_analysis.analyze_region(POLYGON, variable, 2020, 2021)
 
     def test_large_polygon_then_point_analysis_keeps_point_product_and_result(self):
         variables_before = copy.deepcopy(VARIABLES["ndvi"])

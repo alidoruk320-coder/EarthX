@@ -1,6 +1,14 @@
 import { jsPDF } from "jspdf";
 import AnnualSeriesChart from "./AnnualSeriesChart";
 import { ANALYSIS_VARIABLES } from "../data/analysisVariables";
+import ObservationSeriesChart from "./ObservationSeriesChart";
+
+function formatObservationDate(value, language) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat(language === "tr" ? "tr-TR" : "en-US", {
+    dateStyle: "medium",
+  }).format(new Date(value));
+}
 
 function BiodiversityContextCard({ context, language }) {
   const isTurkish = language === "tr";
@@ -154,6 +162,7 @@ export default function AnalysisPanel({
   const variableDefinition = ANALYSIS_VARIABLES[variable]?.description?.[language] || "";
   const temporalResolution = data.temporalResolution || ANALYSIS_VARIABLES[variable]?.temporalResolution;
   const sourceDocumentationUrl = datasetDocUrl || ANALYSIS_VARIABLES[variable]?.sourceUrl;
+  const observationSeries = data.observationSeries === true;
 
   const reportSeries = Array.isArray(data.series) ? data.series : [];
   const repeatedValuePairs = reportSeries.slice(1).flatMap((point, index) => {
@@ -164,6 +173,7 @@ export default function AnalysisPanel({
   });
   const supportedSource = source?.startsWith("NASA POWER")
     || source?.includes("Google Earth Engine")
+    || source?.startsWith("NASA PO.DAAC Hydrocron")
     || source === "NOAA CoastWatch blended satellite altimetry"
     || source === "NASA/JPL Sea Level Change Portal";
   const modelOutput = data.modelOutput === true;
@@ -195,7 +205,13 @@ export default function AnalysisPanel({
     && Number.isFinite(Number(stats.slope))
     && Number.isFinite(Number(stats.pValue));
   const pValue = hasStatistics ? Number(stats.pValue) : null;
-  const confidence = !hasStatistics
+  const confidence = observationSeries
+    ? {
+        label: "DESCRIPTIVE ONLY",
+        tone: "low",
+        note: "The descriptive Sen slope summarizes the observed series; no inferential test or significance claim is made.",
+      }
+    : !hasStatistics
     ? {
         label: stats?.testStatus === "unavailable" ? "TEST UNAVAILABLE" : "INSUFFICIENT DATA",
         tone: "low",
@@ -208,10 +224,14 @@ export default function AnalysisPanel({
         : { label: "NO SIGNIFICANT EVIDENCE", tone: "low", note: "No statistically significant monotonic trend detected; natural variability remains plausible." };
   const localizedConfidence = isTurkish ? {
     ...confidence,
-    label: !hasStatistics
+    label: observationSeries
+      ? "YALNIZCA GÖZLEM"
+      : !hasStatistics
       ? stats?.testStatus === "unavailable" ? "TEST HESAPLANAMADI" : "YETERSİZ VERİ"
       : confidence.tone === "high" ? "GÜÇLÜ İSTATİSTİKSEL KANIT" : confidence.tone === "moderate" ? "İSTATİSTİKSEL KANIT VAR" : "ANLAMLI KANIT YOK",
-    note: !hasStatistics
+    note: observationSeries
+      ? "Sen eğimi gözlenen serinin betimleyici özetidir; p-değeri veya istatistiksel anlamlılık göstermez."
+      : !hasStatistics
       ? stats?.testStatus === "unavailable"
         ? (isTurkish ? "Geçerli test istatistikleri alınamadığı için kanıt düzeyi belirlenemedi." : "Evidence cannot be assigned because valid test statistics are unavailable.")
         : (isTurkish ? "Geçerli istatistiksel test sonucu olmadan kanıt düzeyi belirlenemez." : "A statistical evidence tier cannot be assigned without a valid test result.")
@@ -219,6 +239,21 @@ export default function AnalysisPanel({
   } : confidence;
   const trendText = (() => {
     const trend = stats?.trend;
+    if (observationSeries) {
+      if (stats?.slope == null || !Number.isFinite(Number(stats.slope))) {
+        return isTurkish
+          ? "Betimleyici trend için yeterli zaman aralıklı SWOT gözlemi yok"
+          : "Not enough time-separated SWOT observations for a descriptive trend";
+      }
+      const direction = stats.slope > 0
+        ? (isTurkish ? "yükseliyor" : "increasing")
+        : stats.slope < 0
+          ? (isTurkish ? "düşüyor" : "decreasing")
+          : (isTurkish ? "belirgin değişim yok" : "no net change");
+      return isTurkish
+        ? `Betimleyici Sen eğimi: ${direction}`
+        : `Descriptive Sen trend: ${direction}`;
+    }
     if (!trend) return isTurkish ? "Sonuç yok" : "No result";
     if (modelOutput) {
       return isTurkish
@@ -445,9 +480,13 @@ export default function AnalysisPanel({
         <div className="polygonProcessingNotice" role="status">
           <strong>{isTurkish ? "LÜTFEN BEKLEYİNİZ" : "PLEASE WAIT"}</strong>
           <span>
-            {isTurkish
-              ? "Poligon analizi hesaplaması çok daha ağırdır; bu işlem yaklaşık 1 dakika sürebilir."
-              : "Polygon analysis is much heavier to compute; this step may take about 1 minute."}
+            {variable === "Total Column Ozone"
+              ? isTurkish
+                ? "Ozon poligon alan analizi hesaplanıyor; bu işlem yaklaşık 1,5 dakika sürebilir."
+                : "Ozone polygon area analysis is running; this step may take about 1.5 minutes."
+              : isTurkish
+                ? "Poligon analizi hesaplaması çok daha ağırdır; bu işlem yaklaşık 1 dakika sürebilir."
+                : "Polygon analysis is much heavier to compute; this step may take about 1 minute."}
           </span>
         </div>
       )}
@@ -492,7 +531,7 @@ export default function AnalysisPanel({
           ? "Poligon analizi GeoJSON sınırı ve GEE değişkeni gerektirir. NASA POWER ve deniz seviyesi hızlı örneklemeyi kullanır."
           : "Polygon analysis requires a GeoJSON boundary and a GEE variable. NASA POWER and sea level use fast sampling."}</small>}
       </div>}
-      {analysisRange && analysisRangeBounds && <div className="regionAnalysisMode statisticalYearRange">
+      {analysisRange && analysisRangeBounds && !observationSeries && <div className="regionAnalysisMode statisticalYearRange">
         <label>{isTurkish ? "İSTATİSTİK ARALIĞI (TAMAMLANMIŞ YILLAR)" : "STATISTICAL RANGE (COMPLETED YEARS)"}</label>
         <div className="analysisYearInputs">
           <select aria-label={isTurkish ? "Başlangıç yılı" : "Start year"} value={analysisRange[0]} onChange={(event) => {
@@ -532,7 +571,9 @@ export default function AnalysisPanel({
         <div>
           <h2>{name}</h2>
           <span className="analysisPeriod">
-            {observedStartYear ?? data.analysisStartYear ?? analysisRange?.[0] ?? "—"} → {observedEndYear ?? data.analysisEndYear ?? analysisRange?.[1] ?? "—"}
+            {observationSeries
+              ? `${formatObservationDate(data.observedStartDate, language)} → ${formatObservationDate(data.observedEndDate, language)}`
+              : `${observedStartYear ?? data.analysisStartYear ?? analysisRange?.[0] ?? "—"} → ${observedEndYear ?? data.analysisEndYear ?? analysisRange?.[1] ?? "—"}`}
           </span>
           {observedEndYear != null && observedEndYear < year && (
             <small className="coverageNote">
@@ -570,12 +611,32 @@ export default function AnalysisPanel({
       {variableDefinition && <small className="coverageNote variableDefinition">{variableDefinition}</small>}
 
       <small className="coverageNote">
-        {isTurkish
-          ? `İstatistik dönemi: ${observedStartYear ?? "—"}–${observedEndYear ?? "—"} · Geçerli yıllık gözlem: ${reportSeries.length} · Birim: ${unit || "—"}`
-          : `Statistics period: ${observedStartYear ?? "—"}–${observedEndYear ?? "—"} · Valid annual observations: ${reportSeries.length} · Unit: ${unit || "—"}`}
+        {observationSeries
+          ? isTurkish
+            ? `Gözlem dönemi: ${formatObservationDate(data.observedStartDate, language)}–${formatObservationDate(data.observedEndDate, language)} · Geçerli SWOT geçiş gözlemi: ${reportSeries.length} · Birim: ${unit || "—"}`
+            : `Observation period: ${formatObservationDate(data.observedStartDate, language)}–${formatObservationDate(data.observedEndDate, language)} · Valid SWOT overpasses: ${reportSeries.length} · Unit: ${unit || "—"}`
+          : isTurkish
+            ? `İstatistik dönemi: ${observedStartYear ?? "—"}–${observedEndYear ?? "—"} · Geçerli yıllık gözlem: ${reportSeries.length} · Birim: ${unit || "—"}`
+            : `Statistics period: ${observedStartYear ?? "—"}–${observedEndYear ?? "—"} · Valid annual observations: ${reportSeries.length} · Unit: ${unit || "—"}`}
       </small>
       {temporalResolution && <small className="coverageNote">
-        {isTurkish ? `Kaynak zaman çözünürlüğü: ${temporalResolution}. İstatistikler yıllık seriden hesaplanır.` : `Source temporal resolution: ${temporalResolution}. Statistics use the annual series.`}
+        {observationSeries
+          ? isTurkish
+            ? `Kaynak zaman çözünürlüğü: ${temporalResolution}. Zaman serisi yıllık ortalamaya dönüştürülmez.`
+            : `Source temporal resolution: ${temporalResolution}. Observations are not converted to annual averages.`
+          : isTurkish
+            ? `Kaynak zaman çözünürlüğü: ${temporalResolution}. İstatistikler yıllık seriden hesaplanır.`
+            : `Source temporal resolution: ${temporalResolution}. Statistics use the annual series.`}
+      </small>}
+      {data.locationSelectionDistanceKm != null && <small className="coverageNote">
+        {isTurkish
+          ? `En yakın desteklenen göl özelliğine uzaklık: ${data.locationSelectionDistanceKm} km`
+          : `Distance to nearest supported lake feature: ${data.locationSelectionDistanceKm} km`}
+      </small>}
+      {data.cacheUpdatedAt && <small className="coverageNote">
+        {isTurkish
+          ? `SWOT önbelleği son güncelleme: ${formatObservationDate(data.cacheUpdatedAt, language)}`
+          : `SWOT cache last refreshed: ${formatObservationDate(data.cacheUpdatedAt, language)}`}
       </small>}
       {data.aggregationLabel && <small className="coverageNote">
         {isTurkish ? `Yıllık işlem: ${data.aggregationLabel}${data.elapsedSeconds != null ? ` · Hesaplama: ${data.elapsedSeconds} sn` : ""}` : `Annual aggregation: ${data.aggregationLabel}${data.elapsedSeconds != null ? ` · Calculation: ${data.elapsedSeconds} s` : ""}`}
@@ -591,6 +652,11 @@ export default function AnalysisPanel({
       </div>}
       {data.scaleUsed != null && <small className="coverageNote">
         {isTurkish ? `Ölçek: ${Number(data.scaleUsed).toLocaleString("tr-TR")} m` : `Scale: ${Number(data.scaleUsed).toLocaleString("en-US")} m`}
+      </small>}
+      {data.inputBoundarySimplified && <small className="coverageNote" role="note">
+        {isTurkish
+          ? "Çok ayrıntılı NDVI sınırı, GEE isteğini küçültmek için yaklaşık 0,002° toleransla sadeleştirildi; bu işlem kaynak raster çözünürlüğünü değiştirmez."
+          : "The high-detail NDVI boundary was simplified at approximately 0.002° tolerance to reduce the GEE request; this does not change source raster resolution."}
       </small>}
       {data.sourceUsed && <small className="coverageNote">
         {isTurkish ? `Kullanılan ürün: ${data.sourceUsed}` : `Product used: ${data.sourceUsed}`}
@@ -655,8 +721,12 @@ export default function AnalysisPanel({
             ? `Nokta veri alma yedeği: 3 yıllık aylık bloklar · ${data.pointRetrievalInfo.requestCount ?? "—"} Earth Engine isteği${data.pointRetrievalInfo.elapsedSeconds != null ? ` · ${data.pointRetrievalInfo.elapsedSeconds} sn` : ""}.`
             : `Point retrieval fallback: monthly composites in 3-year blocks · ${data.pointRetrievalInfo.requestCount ?? "—"} Earth Engine requests${data.pointRetrievalInfo.elapsedSeconds != null ? ` · ${data.pointRetrievalInfo.elapsedSeconds} s` : ""}.`)}
         {data.pointRetrievalInfo.fallbackReason && <details className="analysisErrorDetail">
-          <summary>{isTurkish ? "Yedek yönteme geçiş ayrıntısı" : "Fallback reason"}</summary>
-          <small>{data.pointRetrievalInfo.fallbackReason}</small>
+          <summary>{isTurkish ? "İlk sorgu başarısız oldu; yedek analiz tamamlandı · ayrıntı" : "Initial query failed; fallback analysis completed · details"}</summary>
+          <small>{String(data.pointRetrievalInfo.fallbackReason).toLowerCase().includes("memory limit exceeded")
+            ? (isTurkish
+              ? "İlk Earth Engine sorgusu bellek sınırını aştı. Sonuç, yukarıda belirtilen yedek veri alma yöntemiyle tamamlandı. Bu yöntem örnekleme kullanıyorsa sonuç tam poligon alan ortalaması değildir."
+              : "The initial Earth Engine query exceeded its memory limit. The result was completed with the fallback retrieval method described above. If that method uses sampling, the result is not a full polygon area mean.")
+            : data.pointRetrievalInfo.fallbackReason}</small>
         </details>}
       </div>}
       {data.retrievalMethod === "server_monthly_composites_single_response" && <div className="coverageNote" role="status">
@@ -698,12 +768,20 @@ export default function AnalysisPanel({
           : `${data.failedSampleCount} sample points failed; the remaining ${data.regionSampleCount} points were used.`}
       </small>}
 
-      <AnnualSeriesChart
-        series={reportSeries}
-        slope={stats?.slope}
-        unit={unit || ""}
-        language={language}
-      />
+      {observationSeries
+        ? <ObservationSeriesChart
+          series={reportSeries}
+          unit={unit || ""}
+          language={language}
+          trendlineStartValue={stats?.trendlineStartValue}
+          trendlineEndValue={stats?.trendlineEndValue}
+        />
+        : <AnnualSeriesChart
+          series={reportSeries}
+          slope={stats?.slope}
+          unit={unit || ""}
+          language={language}
+        />}
 
       <div className="questionLabel">
         {isTurkish ? "NE DEĞİŞİYOR?" : "WHAT IS CHANGING?"}
@@ -715,14 +793,35 @@ export default function AnalysisPanel({
 
       <div className="analysisGrid">
 
-        <div className="infoCard">
-          <span>{isTurkish ? "Sen eğimi" : "Sen's slope"}</span>
-          <strong>
-            {stats?.slope ?? "—"} /yr
-          </strong>
-        </div>
-
-        {!modelOutput && <>
+        {observationSeries ? <>
+          <div className="infoCard">
+            <span>{isTurkish ? "Son gözlenen su yüzeyi yüksekliği" : "Latest observed water-surface elevation"}</span>
+            <strong>{reportSeries.length
+              ? `${new Intl.NumberFormat(isTurkish ? "tr-TR" : "en-US", { maximumFractionDigits: 3 }).format(reportSeries[reportSeries.length - 1].value)} ${unit}`
+              : "—"}</strong>
+          </div>
+          <div className="infoCard">
+            <span>{isTurkish ? "Betimleyici Sen eğimi" : "Descriptive Sen slope"}</span>
+            <strong>
+              {stats?.slope != null && Number.isFinite(Number(stats.slope))
+                ? `${new Intl.NumberFormat(isTurkish ? "tr-TR" : "en-US", { maximumFractionDigits: 4 }).format(stats.slope)} m/${isTurkish ? "yıl" : "yr"}`
+                : "—"}
+            </strong>
+          </div>
+          <div className="infoCard">
+            <span>{isTurkish ? "Geçerli uydu geçişi" : "Valid satellite overpasses"}</span>
+            <strong>{reportSeries.length}</strong>
+          </div>
+          <div className="infoCard">
+            <span>{isTurkish ? "Son gözlem tarihi" : "Latest observation date"}</span>
+            <strong>{formatObservationDate(data.observedEndDate, language)}</strong>
+          </div>
+        </> : <>
+          <div className="infoCard">
+            <span>{isTurkish ? "Sen eğimi" : "Sen's slope"}</span>
+            <strong>{stats?.slope ?? "—"} /yr</strong>
+          </div>
+          {!modelOutput && <>
           <div className="infoCard">
             <span>Mann-Kendall Z</span>
             <strong>
@@ -749,6 +848,7 @@ export default function AnalysisPanel({
                 : (isTurkish ? "YOK" : "NONE")}
             </strong>
           </div>
+          </>}
         </>}
 
       </div>
@@ -770,7 +870,9 @@ export default function AnalysisPanel({
         </span>
 
         <strong>
-          {!hasStatistics
+          {observationSeries
+            ? (isTurkish ? "UYGULANMADI" : "NOT APPLIED")
+            : !hasStatistics
             ? stats?.testStatus === "unavailable"
               ? (isTurkish ? "TEST HESAPLANAMADI" : "TEST UNAVAILABLE")
               : (isTurkish ? "YETERSİZ VERİ" : "INSUFFICIENT DATA")
@@ -780,7 +882,9 @@ export default function AnalysisPanel({
         </strong>
 
         <small>
-          {isTurkish ? "Eşik: p < 0.05" : "Threshold: p < 0.05"}
+          {observationSeries
+            ? isTurkish ? "Düzensiz uydu kaydı; p-değeri raporlanmaz." : "Irregular satellite record; no p-value is reported."
+            : isTurkish ? "Eşik: p < 0.05" : "Threshold: p < 0.05"}
         </small>
 
       </div>
@@ -797,7 +901,11 @@ export default function AnalysisPanel({
           <strong>{isTurkish ? "Yöntem" : "Method"}</strong>
 
         <p>
-          {modelOutput
+          {observationSeries
+            ? (isTurkish
+              ? "Betimleyici Sen eğimi, düzensiz gözlem tarihleri arasındaki yıllık medyan ikili eğimdir; grafikteki kesikli çizgi bu eğimi özetler. Bu keşifsel özet kalite/buz bayraklarına göre filtrelenmemiş gözlemleri kullanır; p-değeri, Mann–Kendall testi veya istatistiksel anlamlılık iddiası değildir. SWOT değeri seçilen göl özelliğinin su yüzeyi yüksekliğidir; nokta koordinatının ölçümü veya doğrudan su hacmi/debisi değildir."
+              : "The descriptive Sen slope is the median pairwise annual slope across irregular observation dates; the dashed chart line summarizes it. This exploratory summary uses observations without quality/ice-flag filtering; it is not a p-value, Mann–Kendall test, or claim of statistical significance. SWOT values describe the selected lake feature's water-surface elevation, not the clicked coordinate or a direct estimate of water volume/discharge.")
+            : modelOutput
             ? (isTurkish
               ? "Bu HYCOM model çıktısıdır. Model sürüm geçişleri basamaklı değişimler yaratabileceğinden istatistiksel anlamlılık raporlanmaz; yalnız eğim ve kaynak uyarısı gösterilir."
               : "This is HYCOM model output. Model-version transitions can create step changes, so statistical significance is not reported; only the slope and source warning are shown.")

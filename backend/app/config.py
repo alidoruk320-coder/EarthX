@@ -30,8 +30,6 @@ LABEL_TO_ID = {
     "Total Column Ozone": "total_column_ozone",
     "MERRA-2 Air Temperature": "merra2_t2m",
     "MERRA-2 Evaporation Rate": "merra2_evaporation",
-    "GLDAS Root-Zone Soil Moisture": "gldas_root_moisture",
-    "GLDAS Surface Runoff": "gldas_surface_runoff",
 }
 
 VARIABLES = {
@@ -113,11 +111,12 @@ VARIABLES = {
         "palette": ["5e4fa2", "3288bd", "66c2a5", "abdda4", "e6f598", "ffffbf", "fee08b", "fdae61", "f46d43", "d53e4f", "9e0142"],
         "vis_min": 180, "vis_max": 500, "unit": "Dobson units (DU)",
         "scale_meters": 111000,
-        "start_year": 1979,
+        "start_year": 2005, "first_full_year": 2005,
         "latest_complete_year": CURRENT_COMPLETE_YEAR,
         "documentation_url": "https://developers.google.com/earth-engine/datasets/catalog/TOMS_MERGED_V4",
         "aggregation": "mean",
         "temporal_resolution": "Daily",
+        "years_per_request": 10,
         "source": "NASA TOMS/OMI merged product; interpolated dates occur in the source record",
     },
     "merra2_t2m": {
@@ -150,43 +149,13 @@ VARIABLES = {
         "temporal_resolution": "Hourly",
         "source": "NASA MERRA-2 turbulent evaporation; kg/m²/s converted to mm/day",
     },
-    "gldas_root_moisture": {
-        "collection": "NASA/GLDAS/V021/NOAH/G025/T3H",
-        "band": "RootMoist_inst",
-        "equal_area": False,
-        "scale_factor": 1, "offset": 0,
-        "palette": ["8c510a", "d8b365", "f6e8c3", "c7eae5", "5ab4ac", "01665e"],
-        "vis_min": 0, "vis_max": 500, "unit": "kg/m² (annual mean water storage)",
-        "scale_meters": 27830,
-        "start_year": 2000,
-        "latest_complete_year": CURRENT_COMPLETE_YEAR,
-        "documentation_url": "https://developers.google.com/earth-engine/datasets/catalog/NASA_GLDAS_V021_NOAH_G025_T3H",
-        "aggregation": "mean",
-        "temporal_resolution": "3-hourly",
-        "source": "NASA GLDAS-2.1 Noah land-surface model",
-    },
-    "gldas_surface_runoff": {
-        "collection": "NASA/GLDAS/V021/NOAH/G025/T3H",
-        "band": "Qs_acc",
-        "equal_area": False,
-        "scale_factor": 1, "offset": 0,
-        "palette": ["ffffcc", "c2e699", "78c679", "31a354", "006837"],
-        "vis_min": 0, "vis_max": 1500, "unit": "mm water equivalent (annual total)",
-        "scale_meters": 27830,
-        "start_year": 2000,
-        "latest_complete_year": CURRENT_COMPLETE_YEAR,
-        "documentation_url": "https://developers.google.com/earth-engine/datasets/catalog/NASA_GLDAS_V021_NOAH_G025_T3H",
-        "aggregation": "sum",
-        "temporal_resolution": "3-hourly accumulations summed to annual total",
-        "source": "NASA GLDAS-2.1 Noah land-surface model; modeled surface runoff, not measured river discharge",
-    },
 }
 
 # The map's legacy "Precipitation" id and the explicitly named GPM analysis
 # variable use the same IMERG monthly-rate product and processing settings.
 VARIABLES["gpm_precipitation"] = VARIABLES["precipitation"]
 
-# Dedicated configuration for the ten Earth Engine variables that support
+# Dedicated configuration for the seven Earth Engine variables that support
 # polygon-wide, pixel-area-weighted annual aggregation. Quality masks are
 # expressed as a band and accepted bit values; MODIS SummaryQA=0 is best quality.
 _REGION_VARIABLES = (
@@ -197,8 +166,6 @@ _REGION_VARIABLES = (
     "total_column_ozone",
     "merra2_t2m",
     "merra2_evaporation",
-    "gldas_root_moisture",
-    "gldas_surface_runoff",
 )
 region_config = {
     variable_id: {
@@ -220,9 +187,10 @@ region_config = {
             "soil_moisture",
             "merra2_t2m",
             "merra2_evaporation",
-            "gldas_root_moisture",
-            "gldas_surface_runoff",
         },
+        "monthly_weight_by_count": VARIABLES[variable_id].get(
+            "monthly_weight_by_count", False
+        ),
         "mask": (
             {"band": VARIABLES[variable_id]["quality_band"], "accepted_values": [0]}
             if VARIABLES[variable_id].get("quality_band")
@@ -237,6 +205,7 @@ region_config = {
         ),
         "latest_complete_year": VARIABLES[variable_id]["latest_complete_year"],
         "documentation_url": VARIABLES[variable_id].get("documentation_url"),
+        "years_per_request": VARIABLES[variable_id].get("years_per_request"),
         "temporal_resolution": VARIABLES[variable_id].get("temporal_resolution"),
         "source": VARIABLES[variable_id].get("source"),
     }

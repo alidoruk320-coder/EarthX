@@ -1684,11 +1684,54 @@ h1 { margin: 0 0 18px; font-size: clamp(42px, 5vw, 66px); line-height: .98; lett
   .layerGallery { top: 152px; }
   .discoveries { z-index: 100004; }
   .analysisPanel { top: 420px !important; max-height: 28vh !important; }
-  .analysisLoading { top: 382px; left: 14px; right: auto; }
   .modeGuide { top: 112px; }
   .discoveries { bottom: 92px; }
   .changeModeBox { right: 14px; bottom: 11px; width: min(250px, calc(100vw - 28px)); }
 }
+
+.analysisLoading {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  z-index: 100010;
+  display: grid;
+  gap: 8px;
+  width: min(720px, calc(100vw - 32px));
+  padding: 18px 22px 20px;
+  transform: translateX(-50%);
+  border: 2px solid #8ad5e7;
+  border-radius: 12px;
+  background: rgba(5, 23, 32, .98);
+  box-shadow: 0 12px 42px rgba(0, 0, 0, .6), 0 0 26px rgba(76, 182, 207, .24);
+  color: #e8fbff;
+  text-align: center;
+  letter-spacing: .04em;
+}
+.analysisLoading strong { font-size: clamp(17px, 2.2vw, 23px); font-weight: 900; }
+.analysisLoading span { color: #c1e3ea; font-size: 13px; line-height: 1.4; }
+.analysisLoading .analysisAreaNote { color: #edbd79; font-weight: 700; }
+.analysisLoadingExtended { width: min(1040px, calc(100vw - 32px)); gap: 14px; padding: 30px 34px 32px; border-color: #edbd79; box-shadow: 0 16px 54px rgba(0, 0, 0, .72), 0 0 34px rgba(237, 189, 121, .28); }
+.analysisLoadingExtended strong { color: #ffe0ae; font-size: clamp(23px, 3.1vw, 40px); line-height: 1.2; }
+.analysisLoadingExtended span { font-size: clamp(15px, 1.5vw, 19px); }
+.analysisLoadingExtended i { height: 8px; }
+.analysisLoading i { display: block; position: relative; height: 5px; overflow: hidden; border-radius: 5px; background: #193b47; }
+.analysisLoading i::after { position: absolute; inset: 0 auto 0 0; width: 38%; border-radius: inherit; background: #83d5e6; content: ""; animation: analysisLoadingProgress 1.25s ease-in-out infinite alternate; }
+.analysisLoading i.polygon::after { background: #edbd79; }
+@keyframes analysisLoadingProgress { from { transform: translateX(-100%); } to { transform: translateX(265%); } }
+.swotLakePicker { display: block; }
+.swotLakePicker h2 { margin: 8px 0; color: #eff8fa; font-size: 22px; }
+.swotPickerIntro { margin: 0 0 14px; color: #c4d6db; font-size: 12px; line-height: 1.55; }
+.swotChoiceGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.swotChoiceCard { display: grid; align-content: start; gap: 8px; min-height: 128px; padding: 12px; border: 1px solid #568391; background: linear-gradient(145deg, rgba(20, 57, 69, .96), rgba(8, 27, 36, .98)); color: #edf8fa; text-align: left; cursor: pointer; }
+.swotChoiceCard:hover, .swotChoiceCard.active { border-color: #94d9e8; background: #16414e; }
+.swotChoiceCard strong { font-size: 14px; line-height: 1.25; }
+.swotChoiceCard span { color: #b8cbd0; font-size: 10px; line-height: 1.45; }
+.swotChoiceCard b { align-self: end; margin-top: auto; color: #9cdeeb; font-size: 9px; letter-spacing: .06em; }
+.swotChoiceCard.info { border-color: #786c55; background: linear-gradient(145deg, rgba(53, 47, 36, .8), rgba(14, 25, 30, .98)); }
+.swotChoiceCard.info b { color: #edc88f; }
+.swotInfoDetail { margin-top: 10px; padding: 11px; border-left: 3px solid #edbd79; background: rgba(48, 42, 32, .55); }
+.swotInfoDetail strong { color: #f0d2a4; font-size: 11px; }
+.swotInfoDetail p { margin: 6px 0 0; color: #d7d1c7; font-size: 10px; line-height: 1.5; }
 
 .globalStoryPage { width: 100vw; height: 100vh; overflow: auto; padding: 22px clamp(16px, 3vw, 44px) 30px; background: radial-gradient(ellipse at 50% 35%, #12303b 0%, #08131d 68%); color: #edf3f7; }
 .globalStoryHeader { display: grid; grid-template-columns: auto minmax(240px, 1fr) minmax(240px, 340px); align-items: start; gap: 22px; max-width: 1500px; margin: 0 auto 20px; }
@@ -1755,6 +1798,14 @@ h1 { margin: 0 0 18px; font-size: clamp(42px, 5vw, 66px); line-height: .98; lett
 .annualChartLegend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid #70c5d8; }
 .annualChartLegend .annualLegendTrend { border-top: 2px dashed #f2a56c; }
 .annualSeriesChart > small { display: block; margin-top: 3px; }
+.observationSeriesChart { min-width: 0; margin: 14px 0; padding: 12px; border: 1px solid #2e4b56; background: rgba(7, 22, 29, .88); }
+.observationSeriesChart figcaption { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 12px; color: #dce8eb; font-size: 11px; }
+.observationSeriesChart figcaption span, .observationSeriesChart > small { color: #9bb0b7; font-size: 9px; }
+.observationSeriesChart svg { display: block; width: 100%; height: auto; margin-top: 8px; overflow: visible; }
+.observationSeriesChart > small { display: block; margin-top: 3px; }
+.observationChartGrid { stroke: #29434d; stroke-width: 1; }
+.observationChartPoint { fill: #e9fbff; stroke: #247e94; stroke-width: 1.5; }
+.observationChartTrend { stroke: #f2a56c; stroke-width: 2; stroke-dasharray: 6 4; }
 @media (max-width: 850px) {
   .globalStoryHeader { grid-template-columns: 1fr; gap: 12px; }
   .globalStoryControls { grid-template-columns: repeat(3, minmax(0, 1fr)); }

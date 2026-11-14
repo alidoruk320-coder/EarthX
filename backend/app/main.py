@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import FRONTEND_ORIGINS
 from app.responses import SafeJSONResponse
 from app.services.gee_client import init_gee, is_gee_initialized
-from app.routers import biodiversity, imagery, point_analysis, cascade, impact
+from app.routers import biodiversity, imagery, point_analysis, cascade, impact, swot
 
 app = FastAPI(title="TwinEarth API", default_response_class=SafeJSONResponse)
 
@@ -34,3 +34,4 @@ app.include_router(point_analysis.router, prefix="/api")
 app.include_router(cascade.router, prefix="/api")
 app.include_router(biodiversity.router, prefix="/api")
 app.include_router(impact.router, prefix="/api")
+app.include_router(swot.router, prefix="/api")

@@ -4,6 +4,7 @@ const ALLOWED_API_PATHS = [
   /^analyze-region$/,
   /^region-boundary$/,
   /^analyze-series$/,
+  /^analyze-swot-lake$/,
   /^analyze-sea-level$/,
   /^cascade-correlation$/,
   /^biodiversity$/,

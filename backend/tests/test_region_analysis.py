@@ -236,8 +236,6 @@ class RegionAnalysisTests(unittest.TestCase):
         for variable in (
             "merra2_t2m",
             "merra2_evaporation",
-            "gldas_root_moisture",
-            "gldas_surface_runoff",
             "soil_moisture",
         ):
             with self.subTest(variable=variable):
@@ -317,20 +315,21 @@ class RegionAnalysisTests(unittest.TestCase):
         self.assertFalse(first["cache_hit"])
         self.assertTrue(second["cache_hit"])
 
-    def test_runoff_unit_is_reported_as_annual_total(self):
-        self.assertEqual(region_config["gldas_surface_runoff"]["aggregate"], "sum")
-        self.assertIn("annual total", region_config["gldas_surface_runoff"]["unit"])
-
     def test_high_frequency_products_use_monthly_first_aggregation(self):
         for variable in (
             "soil_moisture",
             "merra2_t2m",
             "merra2_evaporation",
-            "gldas_root_moisture",
-            "gldas_surface_runoff",
         ):
             with self.subTest(variable=variable):
                 self.assertTrue(region_config[variable]["monthly_first"])
+
+    def test_ozone_uses_native_yearly_composites_and_only_complete_source_years(self):
+        cfg = region_config["total_column_ozone"]
+        self.assertFalse(cfg["monthly_first"])
+        self.assertFalse(cfg["monthly_weight_by_count"])
+        self.assertEqual(cfg["start_year"], 2005)
+        self.assertEqual(cfg["first_full_year"], 2005)
 
     def test_soil_moisture_sampled_region_mode_is_explicitly_disabled(self):
         points = [

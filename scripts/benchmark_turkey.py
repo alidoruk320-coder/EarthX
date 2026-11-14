@@ -17,14 +17,10 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.config import GEE_PROJECT_ID, region_config
 from app.services.gee_client import init_gee, is_gee_initialized
 from app.services.region_analysis import analyze_region, ee, polygonal_geometry
-from app.services.trend_engine import analyze_annual_series
-import pymannkendall as mk
-
-
 VARIABLES = (
     "ndvi", "soil_moisture", "grace_tws", "gpm_precipitation",
     "total_column_ozone", "merra2_t2m",
-    "merra2_evaporation", "gldas_root_moisture", "gldas_surface_runoff",
+    "merra2_evaporation",
 )
 
 
@@ -116,27 +112,6 @@ def run_case(region_name, geometry, boundary_source, variable):
             )
             print(f"  SPEED (>60 s): {suggestion}")
         print(f"  source configuration: {source_label}; boundary: {boundary_source}; interval: {start_year}-{end_year}")
-        if variable == "gldas_surface_runoff" and result.get("raw_series"):
-            observations = result["raw_series"]
-            values = [float(row["value"]) for row in observations if row.get("value") is not None]
-            engine = analyze_annual_series(
-                [(int(row["year"]), float(row["value"])) for row in observations if row.get("value") is not None],
-                expected_start_year=start_year,
-                expected_end_year=end_year,
-            )
-            direct = mk.hamed_rao_modification_test(values, lag=None) if len(values) >= 8 else None
-            s_stat = getattr(direct, "s", None) if direct else None
-            slope = mk.sens_slope(values).slope if len(values) >= 2 else None
-            agrees = bool(direct and engine.get("p_value") is not None
-                and engine.get("z_score") is not None and engine.get("sen_slope") is not None
-                and abs(float(engine.get("p_value")) - float(direct.p)) < 1e-12 and
-                abs(float(engine.get("z_score")) - float(direct.z)) < 1e-5 and
-                abs(float(engine.get("sen_slope")) - float(slope)) < 1e-7)
-            print(
-                f"  GLDAS runoff independent MK: S={s_stat}, z={getattr(direct, 'z', None)}, "
-                f"p={getattr(direct, 'p', None)}, pymannkendall Sen={slope}; "
-                f"engine/direct agreement={agrees}"
-            )
     except Exception as error:
         detail = str(error)
         concurrency = "too many concurrent aggregations" in detail.lower()
