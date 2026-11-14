@@ -5,7 +5,7 @@ function Landing({ onEnter, language, setLanguage }) {
   const assetBase = import.meta.env.BASE_URL;
   const isTurkish = language === "tr";
   const [tourStep, setTourStep] = useState(0);
-  const [tourComplete, setTourComplete] = useState(() => localStorage.getItem("twinearth-guide-v1") === "complete");
+  const [tourComplete, setTourComplete] = useState(() => localStorage.getItem("twinearth-guide-v2") === "complete");
 
   const tourSteps = isTurkish ? [
     {
@@ -14,14 +14,18 @@ function Landing({ onEnter, language, setLanguage }) {
       points: ["Her katmanın kaynağı ve yılı üstte gösterilir.", "Veri yoksa bu, sıfır değişim demek değildir."],
     },
     {
-      title: "Mavi her zaman soğuk demek değildir",
-      body: "Rengin anlamı seçili katmana bağlıdır.",
-      points: ["Uydu tabanı hava fotoğrafıdır; görüntü tarihi bölgeye göre değişebilir ve her yerde ev ayrıntısı bulunmayabilir.", "Sıcaklık katmanı: mavi daha düşük, sarı-kırmızı daha yüksek yüzey sıcaklığı gösterir.", "NDVI, toprak nemi ve GRACE katmanlarının her birinin farklı ölçeği ve birimi vardır. Renk, artış/azalış veya iyi/kötü anlamına gelmez."],
+      title: "Soldaki görsel katmanlar",
+      body: "Sol panelde Dünya üzerinde gösterilecek harita katmanını seçin. Bu görseller değişkenin istatistiksel analizinden ayrıdır.",
+      image: `${assetBase}images/tour-visual.webp`,
+      imageAlt: "Soldaki görsel katman panelini gösteren Dünya ekranı",
+      points: ["Gerçek Renk uydu görüntüsünü; Bitki Örtüsü, Sıcaklık, Kar, Deniz Yüzeyi Sıcaklığı ve Yağış tematik katmanlarını gösterir.", "Renklerin anlamı seçili katmana göre değişir; her katmanın ölçüsü ve birimi farklıdır.", "Tüm Worldview katmanlarını ara düğmesiyle ek görsel katmanları bulabilirsiniz."],
     },
     {
-      title: "Yıl seçimi ve veri kapsamı",
-      body: "Alttaki zaman kaydırıcısı seçili uydu gözlem yılını değiştirir. Üstteki katman etiketi hangi değişkenin hangi yıl için yüklendiğini gösterir.",
-      points: ["Benzer yıllardaki ölçümlerin renkleri birbirine yakın olabilir; harita yine de yeni yılın verisini yükler.", "GRACE V04 verisi 2017-01'de sona eriyor; yıllık analiz son tam yıl olan 2016'da biter. Daha sonraki seçili yıllarda mevcut kapsam açıkça belirtilir.", "Uydu tabanının çekim tarihi seçilen yıldan farklı olabilir; yıl kaydırıcısı tematik ölçüm katmanını ve analiz dönemini değiştirir."],
+      title: "Sağ panelde analiz değişkenini seçin",
+      body: "Sağ üstteki açılır menü, istatistiksel analizde incelenecek değişkeni belirler. Bu seçim soldaki görsel katmandan bağımsızdır.",
+      image: `${assetBase}images/tour-analysis.webp`,
+      imageAlt: "Sağdaki istatistiksel analiz değişken menüsünü gösteren Dünya ekranı",
+      points: ["Bir yer arayın veya kürede bir noktaya tıklayın; seçili değişkenin zaman serisi ve istatistikleri yüklenir.", "Menüde sıcaklık, yağış, bitki örtüsü, toprak nemi ve diğer veri ürünleri bulunur; her ürünün kapsadığı dönem farklı olabilir.", "Alttaki zaman kaydırıcısı harita yılını değiştirir. Kaynakta veri yoksa bu, sıfır değişim anlamına gelmez."],
     },
     {
       title: "p-değeri ve Sen eğimi",
@@ -29,9 +33,11 @@ function Landing({ onEnter, language, setLanguage }) {
       points: ["p-değeri, trend yok varsayımı altında bu kadar uç bir sonucun görülmesine ilişkin kanıttır. p<0,05 istatistiksel kanıt sayılır; trendin doğru olma olasılığının %95 olduğu anlamına gelmez.", "Sen eğimi yıllık ortanca değişim hızını verir; grafikteki kesikli çizgi bu eğimi gösterir. Eksik yıllar çizgide birleştirilmez.", "Korelasyon nedensellik kanıtı değildir; sonuçları veri dönemi, kaynak ve doğal değişkenlikle birlikte yorumlayın."],
     },
     {
-      title: "Harita araçları ve modlar",
-      body: "Bir ülke adı yazmadan arama yapabilir veya Draw Mode ile doğrudan bir koordinata tıklayabilirsiniz.",
-      points: ["Layer Gallery görsel katmanı seçer; sayısal trend ayrı NASA/Google Earth Engine zaman serisinden hesaplanır. Global Story başlangıç ve seçili yılı karşılaştırır.", "Cascade yıllık seriler arasındaki gecikmeli korelasyonu ölçer; neden-sonuç kanıtlamaz. Global Story'deki GBIF kayıtları hayvan sayısı değildir.", "Impact, backend ve Earth Engine yapılandırılmışsa WorldPop/VIIRS maruziyet bağlamı sağlar; bağlantı yoksa hata durumunu gösterir, veri uydurmaz."],
+      title: "Anlık Keşifler ve harita modları",
+      body: "Sol alttaki hazır örneklerle belirli konum ve veri kümelerini hemen açabilir, soldaki panelden farklı modlara geçebilirsiniz.",
+      image: `${assetBase}images/tour-discoveries.webp`,
+      imageAlt: "Dünya ekranında örnek konumları gösteren Anlık Keşifler paneli",
+      points: ["Anlık Keşifler; SWOT göl gözlemleri, Sahel bitki örtüsü ve GRACE su depolama bağlamı gibi örnekleri açar.", "Cascade yıllık değişkenleri gecikmeli karşılaştırır; korelasyon neden-sonuç kanıtlamaz. Impact, nüfus ve gece ışığı maruziyet bağlamı sunar.", "Nokta Modu ile küreye tıklayın; Küresel Hikâye farklı yerleri ve yılları karşılaştırır. GBIF kayıtları hayvan sayısı değildir."],
     },
     {
       title: "PDF ne zaman kullanılabilir?",
@@ -45,14 +51,18 @@ function Landing({ onEnter, language, setLanguage }) {
       points: ["The selected layer and year appear above the globe.", "Missing data does not mean zero change."],
     },
     {
-      title: "Blue does not always mean cold",
-      body: "A color's meaning depends on the selected layer.",
-      points: ["The satellite basemap is aerial imagery; capture dates vary by region, and house-level detail is not available everywhere.", "In the Temperature layer, blue means lower and yellow-red means higher surface temperature.", "NDVI, soil moisture, and GRACE each use different scales and units. Color does not mean increase/decrease or good/bad."],
+      title: "Visual layers on the left",
+      body: "Choose the map layer shown on the globe from the left panel. These visual layers are separate from the statistical analysis of a variable.",
+      image: `${assetBase}images/tour-visual.webp`,
+      imageAlt: "Earth screen highlighting the visual layer gallery on the left",
+      points: ["True Color shows satellite imagery; Vegetation, Temperature, Snow, Sea Surface Temperature, and Precipitation show thematic layers.", "Color meanings depend on the selected layer; each uses its own measurement scale and units.", "Use Search Full Worldview Catalog to find additional visual layers."],
     },
     {
-      title: "Year selection and data coverage",
-      body: "The timeline changes the selected satellite observation year. The layer badge identifies the variable and year currently requested.",
-      points: ["Similar years can have similar colors even when the underlying observations differ.", "GRACE V04 ends in January 2017, so annual analysis stops at the last complete year, 2016. Later selected years display the available coverage clearly.", "The satellite basemap capture date may differ from the selected year; the timeline changes thematic measurements and the analysis period."],
+      title: "Choose an analysis variable on the right",
+      body: "The dropdown at the top right selects which variable to analyze statistically. It is independent of the visual map layer on the left.",
+      image: `${assetBase}images/tour-analysis.webp`,
+      imageAlt: "Earth screen highlighting the statistical analysis variable menu on the right",
+      points: ["Search for a place or click the globe to load the selected variable's time series and statistics.", "The menu includes temperature, precipitation, vegetation, soil moisture, and other products; each dataset has its own coverage period.", "The bottom timeline changes the map year. Missing source data does not mean zero change."],
     },
     {
       title: "p-value and Sen's slope",
@@ -60,9 +70,11 @@ function Landing({ onEnter, language, setLanguage }) {
       points: ["The p-value measures evidence against a no-trend assumption. p<0.05 is statistical evidence; it is not a 95% probability that the trend is true.", "Sen's slope estimates the median annual rate of change; the dashed chart line shows that slope. Missing years are not connected in the observed series.", "Correlation is not proof of causation; interpret results with the period, source, and natural variability in mind."],
     },
     {
-      title: "Map tools and modes",
-      body: "Search for a place or click a coordinate directly with Draw Mode; no country name is required.",
-      points: ["Layer Gallery selects a visual layer; numerical trends come from a separate NASA/Google Earth Engine time series. Global Story compares baseline and selected years.", "Cascade measures lagged correlation between annual series; it does not prove cause and effect. GBIF records in Global Story are not animal counts.", "Impact provides WorldPop/VIIRS exposure context when the backend and Earth Engine are configured; without them, the app reports unavailability instead of inventing data."],
+      title: "Instant Discoveries and map modes",
+      body: "Use the curated examples at the lower left to jump into prepared locations and datasets, or choose a mode from the left panel.",
+      image: `${assetBase}images/tour-discoveries.webp`,
+      imageAlt: "Instant Discoveries panel showing example locations on the Earth screen",
+      points: ["Instant Discoveries opens examples such as SWOT lake observations, Sahel vegetation, and GRACE water-storage context.", "Cascade compares annual variables with time lags; correlation does not prove cause. Impact summarizes population and night-light exposure context.", "Draw Mode lets you click a location; Global Story compares places and years. GBIF records are observations, not animal counts."],
     },
     {
       title: "When can you export a PDF?",
@@ -72,7 +84,7 @@ function Landing({ onEnter, language, setLanguage }) {
   ];
 
   function finishTour() {
-    localStorage.setItem("twinearth-guide-v1", "complete");
+    localStorage.setItem("twinearth-guide-v2", "complete");
     setTourComplete(true);
   }
 
@@ -157,6 +169,9 @@ function Landing({ onEnter, language, setLanguage }) {
             </div>
             <h2 id="tourTitle">{tourSteps[tourStep].title}</h2>
             <p className="onboardingBody">{tourSteps[tourStep].body}</p>
+            {tourSteps[tourStep].image && <figure className="onboardingImage">
+              <img src={tourSteps[tourStep].image} alt={tourSteps[tourStep].imageAlt} />
+            </figure>}
             <ul className="onboardingPoints">
               {tourSteps[tourStep].points.map((point) => <li key={point}>{point}</li>)}
             </ul>
